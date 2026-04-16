@@ -1,4 +1,3 @@
-
 import whisper
 import hashlib
 import datetime
