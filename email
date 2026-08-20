@@ -1,21 +1,106 @@
-Boa tarde, Dayanna, e equipe Jurídica,
-​Conforme solicitado, apresentamos o parecer técnico e a consolidação das evidências referentes à reclamação aberta pelo novo segurado Bruno da Silva.
-​Após auditoria aprofundada nos dados cadastrais e de acionamento, identificou-se que o Sr. Bruno da Silva integra a rede de atuação coordenada na cidade de Caracaraí – RR, previamente mapeada no parecer técnico do segurado Silas Souza Cabral e grupo.
-​Abaixo, detalhamos a origem da sinalização sistêmica e os elementos que confirmam a inconsistência da apólice:
-​1. Origem do Alerta Sistêmico (Compartilhamento de Contato)
-O alerta preventivo que motivou a retenção do atendimento ao Sr. Bruno não partiu originalmente do seu CPF (por se tratar de apólice recente), mas sim do telefone de contato informado pelo próprio segurado: 95984280549.
-​O referido número já possuía trava preventiva por estar vinculado à abertura de assistências e pedidos de reembolso de outros dois titulares da mesma região: David Rodrigo Araujo Messa e Jorliani da Silva Bento.
-​2. Vínculo Direto com o Prestador Irregular (Evidência Definitiva)
-Ao aprofundar a análise cadastral para responder à presente manifestação, identificou-se a evidência material que confirma o conluio:
-​O e-mail de contato fornecido pelo segurado Bruno da Silva na proposta/atendimento é exatamente o mesmo e-mail cadastral vinculado à empresa BR SERVIÇOS LTDA (CNPJ 63.732.439/0001-29);
-​Esta sobreposição comprova que o solicitante do benefício e o emissor da documentação de reembolso possuem a mesma origem operacional, violando o princípio da livre escolha, da boa-fé e da independência nas prestações de serviço.
-​3. Síntese do Histórico da Rede BR Serviços (Caracaraí - RR)
-Para contextualização da área Jurídica, a empresa BR SERVIÇOS LTDA centraliza os pedidos de reembolso da referida rede e apresenta as seguintes irregularidades formais:
-​Situação Cadastral: Empresa em situação SUSPENSA por inconsistência cadastral junto à Receita Federal;
-​Inconsistência Geográfica: Cadastro localizado em Porto Alegre – RS, emitindo documentos para supostos serviços emergenciais prestados em Caracaraí – RR;
-​Centralização Documental: Formulários e recibos do grupo apresentam padrão caligráfico idêntico e fotos produzidas no mesmo ambiente físico.
-​Conclusão e Parecer Técnico/Jurídico:
-A sinalização preventiva do sistema mostrou-se absolutamente precisa. O vínculo direto do e-mail do segurado com a empresa BR SERVIÇOS LTDA comprova a ausência de um sinistro real e independente, configurando simulação de atendimento para obtenção indevida de ressarcimento.
-​Diante da flagrante inobservância das Condições Gerais do produto — especialmente no tocante à obrigatoriedade de idoneidade documental, veracidade do evento e independência entre as partes —, recomendamos a manutenção irrestrita do indeferimento dos serviços/reembolsos e do bloqueio preventivo na apólice do Sr. Bruno da Silva.
-​Permanecemos à disposição da Qualidade e do Jurídico para o fornecimento das telas e comprovantes que fundamentam este parecer.
-​Atenciosamente,
+import pandas as pd
+import networkx as nx
+from pyvis.network import Network
+
+# 1. Arquivo de 5 colunas do Qlik
+arquivo_excel = "extracao_qlik_padrao_5_colunas.xlsx"
+
+# Detecta automaticamente a linha do cabeçalho
+raw_df = pd.read_excel(arquivo_excel, header=None)
+linha_cabecalho = 0
+for idx, row in raw_df.iterrows():
+    linha_texto = " ".join(row.dropna().astype(str).tolist())
+    if "CPF" in linha_texto:
+        linha_cabecalho = idx
+        break
+
+df = pd.read_excel(arquivo_excel, header=linha_cabecalho)
+df.columns = [str(c).strip() for c in df.columns]
+
+# Mapeia as 5 colunas
+col_data = [c for c in df.columns if "Data" in c][0]
+col_id = [c for c in df.columns if "Assistência" in c or "Número" in c][0]
+col_nome = [c for c in df.columns if "Nome" in c or "Titular" in c][0]
+col_cpf = [c for c in df.columns if "CPF" in c][0]
+col_tel = [c for c in df.columns if "Telefone" in c][0]
+
+# 2. FILTRO INTELIGENTE: Pega apenas telefones compartilhados (Hubs de Fraude)
+contagem_tel = df[col_tel].value_counts()
+hubs = contagem_tel[contagem_tel > 1].index.tolist()
+
+df_hubs = df[df[col_tel].isin(hubs)].copy()
+
+print(f"📊 Registros analisados: {len(df)}")
+print(f"🚨 Hubs mapeados: {len(hubs)} telefones compartilhados por múltiplos CPFs")
+
+# 3. Inicializa a Rede Visual Interativa
+net = Network(height="900px", width="100%", bgcolor="#0b1329", font_color="white")
+
+# 4. Criação dos Nós e Vínculos
+G = nx.Graph()
+
+# Agrupa assistências por Telefone e Titular
+for tel in hubs:
+    df_tel = df_hubs[df_hubs[col_tel] == tel]
+    qtd_total = len(df_tel)
+    cpfs_unicos = df_tel[col_cpf].nunique()
+    
+    # Nó Central: HUB TELEFÔNICO (Caixa Vermelha em Destaque)
+    net.add_node(
+        tel,
+        label=f"🚨 HUB: {tel}\n({qtd_total} assistências | {cpfs_unicos} CPFs)",
+        title=f"Telefone Compartilhado: {tel}\nTotal de Acionamentos: {qtd_total}",
+        color="#EF4444",
+        shape="box",
+        size=30,
+        font={'color': 'white', 'size': 14, 'bold': True}
+    )
+    
+    # Nós Satélites: CPFs / Titulares vinculados
+    resumo_cpfs = df_tel.groupby([col_cpf, col_nome]).size().reset_index(name='qtd_acionamentos')
+    for _, row in resumo_cpfs.iterrows():
+        cpf_val = str(row[col_cpf])
+        nome_val = str(row[col_nome])
+        qtd_segurado = row['qtd_acionamentos']
+        
+        id_no = f"{cpf_val}_{tel}" # ID único para a rede
+        
+        # Bolinha Azul do Segurado
+        net.add_node(
+            id_no,
+            label=f"{nome_val.split()[0]} {nome_val.split()[-1]}\n({cpf_val[:3]}...)\n[{qtd_segurado}x]",
+            title=f"Titular: {nome_val}\nCPF: {cpf_val}\nAcionamentos neste telefone: {qtd_segurado}",
+            color="#0284C7",
+            shape="dot",
+            size=18,
+            font={'color': '#E2E8F0', 'size': 11}
+        )
+        
+        # Linha conectando o Segurado ao Hub
+        net.add_edge(id_no, tel, color="#475569", width=2)
+
+# 5. Configuração de física estável: organiza em círculos limpos e congela
+net.set_options("""
+var options = {
+  "physics": {
+    "forceAtlas2Based": {
+      "gravitationalConstant": -70,
+      "centralGravity": 0.02,
+      "springLength": 130,
+      "springConstant": 0.15,
+      "damping": 0.85
+    },
+    "solver": "forceAtlas2Based",
+    "stabilization": {
+      "enabled": true,
+      "iterations": 180
+    }
+  }
+}
+""")
+
+# 6. Salva o HTML
+nome_saida = "mapa_rede_fraude.html"
+net.write_html(nome_saida)
+
+print(f"\n🚀 Sucesso! O arquivo '{nome_saida}' foi gerado na sua pasta.")
