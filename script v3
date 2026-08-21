@@ -1,0 +1,424 @@
+import pandas as pd
+import json
+import os
+from pathlib import Path
+
+# =====================================================
+# 1. LOCALIZAÇÃO DO ARQUIVO EXCEL NA PASTA "casos"
+# =====================================================
+BASE_DIR = Path(__file__).parent
+PASTA_CASOS = BASE_DIR / "casos"
+
+# Cria a pasta caso ainda não exista
+PASTA_CASOS.mkdir(exist_ok=True)
+
+arquivos_excel = list(PASTA_CASOS.glob("*.xlsx"))
+
+if not arquivos_excel:
+    raise FileNotFoundError(
+        f"Nenhum arquivo .xlsx encontrado na pasta: {PASTA_CASOS}\n"
+        f"Coloque sua planilha do Qlik dentro da pasta 'casos' e execute novamente."
+    )
+
+arquivo_excel = arquivos_excel[0]
+print(f"📂 Arquivo em processamento: {arquivo_excel.name}")
+
+df = pd.read_excel(arquivo_excel)
+
+# =====================================================
+# 2. DETECÇÃO DINÂMICA E SEGURA DAS COLUNAS
+# =====================================================
+def encontrar_coluna(df, palavras_chave):
+    for c in df.columns:
+        c_lower = str(c).lower()
+        if any(p.lower() in c_lower for p in palavras_chave):
+            return c
+    return None
+
+def valor_valido(val):
+    if pd.isna(val):
+        return False
+    v_str = str(val).strip()
+    return v_str != "" and v_str.lower() not in ["nan", "none", "null", "nat", "-"]
+
+col_cpf = encontrar_coluna(df, ["cpf"])
+col_nome = encontrar_coluna(df, ["nome", "titular", "segurado", "cliente"])
+col_tel = encontrar_coluna(df, ["telefone", "celular", "contato", "fone", "tel"])
+col_placa = encontrar_coluna(df, ["placa", "veiculo", "veículo", "auto"])
+col_id = encontrar_coluna(df, ["assistência", "assistencia", "id", "sinistro", "numero", "número", "acionamento"])
+col_data = encontrar_coluna(df, ["data", "abertura", "dt"])
+
+print("\n🔍 Mapeamento das Colunas:")
+print(f"  • CPF:          {col_cpf or '❌ (Não presente)'}")
+print(f"  • Titular:      {col_nome or '❌ (Não presente)'}")
+print(f"  • Telefone:     {col_tel or '❌ (Não presente)'}")
+print(f"  • Placa:        {col_placa or '❌ (Não presente)'}")
+print(f"  • Assistência:  {col_id or '❌ (Não presente)'}")
+print(f"  • Data:         {col_data or '❌ (Não presente)'}\n")
+
+# =====================================================
+# 3. CONSTRUÇÃO DO GRAFO FORENSE
+# =====================================================
+nodes = []
+edges = []
+nodes_map = {}
+edges_set = set()
+
+cores_grupos = {
+    "telefone": {"background": "#B91C1C", "border": "#EF4444"},
+    "cpf": {"background": "#0284C7", "border": "#38BDF8"},
+    "placa": {"background": "#7C3AED", "border": "#A78BFA"},
+    "assistencia": {"background": "#C2410C", "border": "#F97316"}
+}
+
+def add_node(id_val, label_val, group_type, base_font_size, title_val):
+    id_str = str(id_val)
+    if id_str not in nodes_map:
+        cfg_cor = cores_grupos[group_type]
+        node_obj = {
+            "id": id_str,
+            "label": str(label_val),
+            "group": str(group_type),
+            "shape": "box",
+            "margin": 8,
+            "base_font_size": int(base_font_size),
+            "title": str(title_val),
+            "color": {
+                "background": cfg_cor["background"],
+                "border": cfg_cor["border"],
+                "highlight": {"background": cfg_cor["border"], "border": "#FFFFFF"}
+            },
+            "font": {"color": "#FFFFFF", "size": int(base_font_size), "bold": True, "face": "Segoe UI"},
+            "shadow": {"enabled": True, "color": "rgba(0,0,0,0.6)", "size": 6, "x": 0, "y": 2}
+        }
+        nodes.append(node_obj)
+        nodes_map[id_str] = node_obj
+
+def add_edge(from_val, to_val, color_hex, width_val):
+    par = tuple(sorted([str(from_val), str(to_val)]))
+    if par not in edges_set:
+        edges_set.add(par)
+        edges.append({
+            "from": str(from_val),
+            "to": str(to_val),
+            "color": {"color": color_hex},
+            "width": width_val
+        })
+
+for idx, row in df.iterrows():
+    # 1. Extração segura dos campos
+    cpf = str(row[col_cpf]).strip() if col_cpf and valor_valido(row[col_cpf]) else None
+    nome = str(row[col_nome]).strip() if col_nome and valor_valido(row[col_nome]) else None
+    tel = str(row[col_tel]).strip() if col_tel and valor_valido(row[col_tel]) else None
+    placa = str(row[col_placa]).strip() if col_placa and valor_valido(row[col_placa]) else None
+    id_assist = str(row[col_id]).strip() if col_id and valor_valido(row[col_id]) else None
+    
+    data_ab = ""
+    if col_data and valor_valido(row[col_data]):
+        raw_dt = str(row[col_data]).strip()
+        data_ab = raw_dt.split()[0] if " " in raw_dt else raw_dt
+
+    # 2. Identificador principal do Titular
+    if cpf and nome:
+        titular_id = cpf
+        titular_label = f"👤 {nome}"
+        titular_title = f"TITULAR: {nome}\nCPF: {cpf}"
+    elif nome:
+        titular_id = nome
+        titular_label = f"👤 {nome}"
+        titular_title = f"TITULAR: {nome}"
+    elif cpf:
+        titular_id = cpf
+        titular_label = f"👤 CPF: {cpf[:3]}.***.***-**"
+        titular_title = f"CPF: {cpf}"
+    else:
+        titular_id = f"caso_{idx}"
+        titular_label = f"👤 Caso #{idx+1}"
+        titular_title = f"Registro #{idx+1}"
+
+    # Adiciona o Titular
+    add_node(titular_id, titular_label, "cpf", 13, titular_title)
+
+    # 3. Adiciona Telefone (se existir)
+    if tel:
+        add_node(tel, f"🚨 {tel}", "telefone", 13, f"TELEFONE DE CONTATO:\n{tel}")
+        add_edge(titular_id, tel, "#EF4444", 2.5)
+
+    # 4. Adiciona Placa (se existir)
+    if placa:
+        add_node(placa, f"🚗 {placa}", "placa", 13, f"PLACA DO VEÍCULO:\n{placa}")
+        add_edge(titular_id, placa, "#A855F7", 2.5)
+
+    # 5. Adiciona Assistência (se existir)
+    if id_assist:
+        label_assist = f"📋 #{id_assist}\n{data_ab}" if data_ab else f"📋 #{id_assist}"
+        title_assist = f"ASSISTÊNCIA: #{id_assist}" + (f"\nDATA: {row[col_data]}" if col_data and valor_valido(row[col_data]) else "")
+        add_node(id_assist, label_assist, "assistencia", 11, title_assist)
+        add_edge(titular_id, id_assist, "#F97316", 2.0)
+
+# =====================================================
+# 4. GERAÇÃO DO HTML INTERATIVO
+# =====================================================
+html_code = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel de Vínculos Forenses - LCFO</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }}
+        body {{ display: flex; height: 100vh; background-color: #06090F; color: #F1F5F9; overflow: hidden; }}
+        
+        .sidebar {{ width: 320px; background: #0D131F; border-right: 1px solid #1E293B; padding: 22px; display: flex; flex-direction: column; gap: 16px; z-index: 10; }}
+        .sidebar h2 {{ font-size: 16px; color: #FFFFFF; font-weight: 700; letter-spacing: -0.3px; }}
+        .sidebar p {{ font-size: 11.5px; color: #94A3B8; line-height: 1.4; }}
+        
+        .filter-group {{ background: #131D2F; border: 1px solid #1E293B; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 9px; }}
+        .filter-group h3 {{ font-size: 11px; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px; }}
+        
+        .checkbox-label {{ display: flex; align-items: center; gap: 10px; font-size: 12.5px; cursor: pointer; color: #CBD5E1; }}
+        .checkbox-label input {{ cursor: pointer; width: 16px; height: 16px; accent-color: #38BDF8; }}
+        
+        .btn {{ background: #1E293B; border: 1px solid #334155; color: #F8FAFC; padding: 9px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }}
+        .btn:hover {{ background: #334155; }}
+        .btn-hd {{ background: #0284C7; border-color: #38BDF8; color: #FFFFFF; font-weight: bold; }}
+        .btn-hd:hover {{ background: #0369A1; }}
+
+        .range-slider-container {{ display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: #94A3B8; }}
+        .range-slider-container input {{ cursor: pointer; accent-color: #38BDF8; }}
+        
+        .canvas-area {{ flex: 1; position: relative; background: radial-gradient(circle at 50% 50%, #111A2E 0%, #06090F 100%); }}
+        #network {{ width: 100%; height: 100%; }}
+        
+        .floating-legend {{ position: absolute; top: 16px; right: 16px; background: rgba(13, 19, 31, 0.92); border: 1px solid #1E293B; border-radius: 8px; padding: 10px 16px; display: flex; gap: 18px; font-size: 11.5px; pointer-events: none; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; font-weight: 600; }}
+        .badge {{ width: 12px; height: 12px; border-radius: 3px; }}
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div>
+            <h2>MAPA DE VÍNCULOS FORENSES</h2>
+            <p>Clique em qualquer nó para isolar sua árvore de relacionamentos.</p>
+        </div>
+        
+        <div class="filter-group">
+            <h3>Entidades Visíveis</h3>
+            <label class="checkbox-label"><input type="checkbox" id="chk-tel" checked onchange="applyFilters()"> 🚨 Telefones</label>
+            <label class="checkbox-label"><input type="checkbox" id="chk-cpf" checked onchange="applyFilters()"> 👤 Titulares</label>
+            <label class="checkbox-label"><input type="checkbox" id="chk-placa" checked onchange="applyFilters()"> 🚗 Placas</label>
+            <label class="checkbox-label"><input type="checkbox" id="chk-assist" checked onchange="applyFilters()"> 📋 Assistências</label>
+        </div>
+
+        <div class="filter-group">
+            <h3>Tamanho do Texto</h3>
+            <label class="checkbox-label" style="color:#38BDF8; font-weight:bold;">
+                <input type="checkbox" id="chk-adaptive-font" checked onchange="updateFontScale()"> 🔍 Texto Adaptativo ao Zoom
+            </label>
+            <div class="range-slider-container" style="margin-top: 4px;">
+                <span>Tamanho Base: <b id="lbl-font-val" style="color:white;">13px</b></span>
+                <input type="range" id="rng-font" min="10" max="22" value="13" oninput="onFontSizeSlider(this.value)">
+            </div>
+        </div>
+
+        <div class="filter-group">
+            <h3>Controles de Visualização</h3>
+            <button class="btn" id="btn-physics" onclick="togglePhysics()">⏸️ Congelar / Liberar Nós</button>
+            <button class="btn" onclick="network.fit({{animation: {{duration: 400}} }})">🔍 Centralizar e Ajustar Zoom</button>
+        </div>
+
+        <div style="margin-top: auto;">
+            <button class="btn btn-hd" style="width: 100%;" onclick="exportHDImage()">📷 Baixar Imagem HD (PNG)</button>
+        </div>
+    </div>
+
+    <div class="canvas-area">
+        <div class="floating-legend">
+            <div class="legend-item"><div class="badge" style="background:#B91C1C;"></div> <span>Telefone</span></div>
+            <div class="legend-item"><div class="badge" style="background:#0284C7;"></div> <span>Titular</span></div>
+            <div class="legend-item"><div class="badge" style="background:#7C3AED;"></div> <span>Placa</span></div>
+            <div class="legend-item"><div class="badge" style="background:#C2410C;"></div> <span>Assistência</span></div>
+        </div>
+        <div id="network"></div>
+    </div>
+
+    <script>
+        const allNodes = {json.dumps(nodes)};
+        const allEdges = {json.dumps(edges)};
+        
+        const nodesDataSet = new vis.DataSet();
+        const edgesDataSet = new vis.DataSet(allEdges);
+        
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        
+        let physicsEnabled = true;
+        let globalFontMultiplier = 1.0;
+        let isZoomUpdating = false;
+        
+        const options = {{
+            groups: {{
+                telefone: {{
+                    color: {{ background: "#B91C1C", border: "#EF4444", highlight: {{ background: "#EF4444", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }},
+                cpf: {{
+                    color: {{ background: "#0284C7", border: "#38BDF8", highlight: {{ background: "#38BDF8", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }},
+                placa: {{
+                    color: {{ background: "#7C3AED", border: "#A78BFA", highlight: {{ background: "#A78BFA", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }},
+                assistencia: {{
+                    color: {{ background: "#C2410C", border: "#F97316", highlight: {{ background: "#F97316", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }}
+            }},
+            physics: {{
+                forceAtlas2Based: {{
+                    gravitationalConstant: -140,
+                    centralGravity: 0.015,
+                    springLength: 260,
+                    springConstant: 0.08,
+                    damping: 0.85
+                }},
+                solver: 'forceAtlas2Based',
+                stabilization: {{ iterations: 180 }}
+            }},
+            interaction: {{
+                dragNodes: true,
+                zoomView: true,
+                hover: true
+            }}
+        }};
+        
+        const network = new vis.Network(container, data, options);
+        
+        network.on("click", function(params) {{
+            if (params.nodes.length > 0) {{
+                const selectedNodeId = params.nodes[0];
+                const connectedNodes = network.getConnectedNodes(selectedNodeId);
+                connectedNodes.push(selectedNodeId);
+                
+                const updates = nodesDataSet.get().map(node => {{
+                    const orig = allNodes.find(item => item.id === node.id);
+                    return {{
+                        id: node.id,
+                        opacity: connectedNodes.includes(node.id) ? 1.0 : 0.15,
+                        color: orig.color
+                    }};
+                }});
+                nodesDataSet.update(updates);
+            }} else {{
+                const updates = nodesDataSet.get().map(node => {{
+                    const orig = allNodes.find(item => item.id === node.id);
+                    return {{
+                        id: node.id,
+                        opacity: 1.0,
+                        color: orig.color
+                    }};
+                }});
+                nodesDataSet.update(updates);
+            }}
+        }});
+
+        function updateFontScale() {{
+            const isAdaptive = document.getElementById('chk-adaptive-font').checked;
+            const currentScale = network.getScale();
+            
+            const currentVisibleNodes = nodesDataSet.get();
+            const updates = [];
+            
+            currentVisibleNodes.forEach(n => {{
+                const originalNode = allNodes.find(item => item.id === n.id);
+                if (!originalNode) return;
+                
+                const baseSize = originalNode.base_font_size * globalFontMultiplier;
+                let targetSize = baseSize;
+                
+                if (isAdaptive) {{
+                    targetSize = Math.max(9, Math.round(baseSize / currentScale));
+                }}
+                
+                updates.push({{
+                    id: n.id,
+                    font: {{ size: targetSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }},
+                    color: originalNode.color
+                }});
+            }});
+            
+            if (updates.length > 0) {{
+                nodesDataSet.update(updates);
+            }}
+        }}
+
+        network.on("zoom", function() {{
+            if (document.getElementById('chk-adaptive-font').checked) {{
+                if (!isZoomUpdating) {{
+                    isZoomUpdating = true;
+                    requestAnimationFrame(() => {{
+                        updateFontScale();
+                        isZoomUpdating = false;
+                    }});
+                }}
+            }}
+        }});
+        
+        function onFontSizeSlider(val) {{
+            globalFontMultiplier = parseFloat(val) / 13.0;
+            document.getElementById('lbl-font-val').innerText = val + 'px';
+            updateFontScale();
+        }}
+        
+        function applyFilters() {{
+            const showTel = document.getElementById('chk-tel').checked;
+            const showCpf = document.getElementById('chk-cpf').checked;
+            const showPlaca = document.getElementById('chk-placa').checked;
+            const showAssist = document.getElementById('chk-assist').checked;
+            
+            const activeGroups = [];
+            if (showTel) activeGroups.push('telefone');
+            if (showCpf) activeGroups.push('cpf');
+            if (showPlaca) activeGroups.push('placa');
+            if (showAssist) activeGroups.push('assistencia');
+            
+            const filteredNodes = allNodes.filter(n => activeGroups.includes(n.group));
+            nodesDataSet.clear();
+            nodesDataSet.add(filteredNodes);
+            
+            setTimeout(() => {{
+                updateFontScale();
+                network.fit();
+            }}, 150);
+        }}
+        
+        function togglePhysics() {{
+            physicsEnabled = !physicsEnabled;
+            network.setOptions({{ physics: {{ enabled: physicsEnabled }} }});
+            document.getElementById('btn-physics').innerText = physicsEnabled ? '⏸️ Congelar / Liberar Nós' : '▶️ Ativar Movimento';
+        }}
+
+        function exportHDImage() {{
+            const canvas = container.querySelector('canvas');
+            const link = document.createElement('a');
+            link.download = 'evidencia_grafo_fraude.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }}
+        
+        applyFilters();
+    </script>
+</body>
+</html>
+"""
+
+caminho_html = BASE_DIR / "grafo_relacionamento_forense.html"
+with open(caminho_html, "w", encoding="utf-8") as f:
+    f.write(html_code)
+
+print(f"🚀 Sucesso! Arquivo '{caminho_html.name}' gerado com suporte a planilhas flexíveis.")
