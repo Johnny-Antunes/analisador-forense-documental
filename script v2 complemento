@@ -1,0 +1,73 @@
+# 3. Construção dos Nós e Arestas (Sem Arestas Duplicadas)
+nodes = []
+edges = []
+nodes_map = {}
+edges_set = set()
+
+cores_grupos = {
+    "telefone": {"background": "#B91C1C", "border": "#EF4444"},
+    "cpf": {"background": "#0284C7", "border": "#38BDF8"},
+    "placa": {"background": "#7C3AED", "border": "#A78BFA"},
+    "assistencia": {"background": "#C2410C", "border": "#F97316"}
+}
+
+def add_node(id_val, label_val, group_type, base_font_size, title_val):
+    id_str = str(id_val)
+    if id_str not in nodes_map:
+        cfg_cor = cores_grupos[group_type]
+        node_obj = {
+            "id": id_str,
+            "label": str(label_val),
+            "group": str(group_type),
+            "shape": "box",
+            "margin": 8,
+            "base_font_size": int(base_font_size),
+            "title": str(title_val),
+            "color": {
+                "background": cfg_cor["background"],
+                "border": cfg_cor["border"],
+                "highlight": {"background": cfg_cor["border"], "border": "#FFFFFF"}
+            },
+            "font": {"color": "#FFFFFF", "size": int(base_font_size), "bold": True, "face": "Segoe UI"},
+            "shadow": {"enabled": True, "color": "rgba(0,0,0,0.6)", "size": 6, "x": 0, "y": 2}
+        }
+        nodes.append(node_obj)
+        nodes_map[id_str] = node_obj
+
+def add_edge(from_val, to_val, color_hex, width_val):
+    # Garante que a conexão entre dois nós seja única, sem repetições
+    par = tuple(sorted([str(from_val), str(to_val)]))
+    if par not in edges_set:
+        edges_set.add(par)
+        edges.append({
+            "from": str(from_val),
+            "to": str(to_val),
+            "color": {"color": color_hex},
+            "width": width_val
+        })
+
+for _, row in df.iterrows():
+    cpf = str(row[col_cpf])
+    nome = str(row[col_nome])
+    tel = str(row[col_tel])
+    placa = str(row[col_placa])
+    id_assist = str(row[col_id])
+    data_ab = str(row[col_data])
+    
+    # 1. Nó Titular (Caixa Azul - Apenas Nome)
+    add_node(cpf, f"👤 {nome}", "cpf", 13, f"TITULAR: {nome}\nCPF: {cpf}")
+    
+    # 2. Nó Telefone (Caixa Vermelha)
+    add_node(tel, f"🚨 {tel}", "telefone", 13, f"TELEFONE DE CONTATO:\n{tel}")
+    
+    # 3. Nó Placa (Caixa Roxa)
+    add_node(placa, f"🚗 {placa}", "placa", 13, f"PLACA DO VEÍCULO:\n{placa}")
+    
+    # 4. Nó Assistência (Caixa Laranja Escura)
+    dt_curta = data_ab.split()[0] if " " in data_ab else data_ab
+    add_node(id_assist, f"📋 #{id_assist}\n{dt_curta}", "assistencia", 11, f"ASSISTÊNCIA: #{id_assist}\nDATA: {data_ab}")
+    
+    # Conexões Únicas (sem repetição na tela)
+    add_edge(cpf, tel, "#EF4444", 2.5)
+    add_edge(cpf, placa, "#A855F7", 2.5)
+    add_edge(cpf, id_assist, "#F97316", 2.0)
