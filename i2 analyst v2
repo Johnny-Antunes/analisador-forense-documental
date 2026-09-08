@@ -1,0 +1,402 @@
+import pandas as pd
+import json
+import re
+import os
+from pathlib import Path
+import networkx as nx
+import webbrowser
+
+# =====================================================
+# 1. CAMINHO DA PASTA COM AS EXTRAÇÕES DIÁRIAS
+# =====================================================
+PASTA_ORIGEM = Path(__file__).parent / "casos_duplicidade"
+PASTA_ORIGEM.mkdir(exist_ok=True)
+
+arquivos_excel = list(PASTA_ORIGEM.glob("*.xlsx"))
+
+if not arquivos_excel:
+    print(f"⚠️ Nenhum arquivo .xlsx encontrado em: {PASTA_ORIGEM}")
+    print("Copie os arquivos diários para a pasta e execute novamente.")
+    exit()
+
+print(f"📂 Encontrados {len(arquivos_excel)} arquivos. Consolidando base...")
+
+# =====================================================
+# 2. CONSOLIDAÇÃO E LIMPEZA FORENSE DOS DADOS
+# =====================================================
+lista_dfs = []
+
+for arq in arquivos_excel:
+    try:
+        # Lê mantendo tipos originais para inspecionar
+        temp_df = pd.read_excel(arq)
+        temp_df["_ARQUIVO_ORIGEM"] = arq.name
+        lista_dfs.append(temp_df)
+    except Exception as e:
+        print(f"Erro ao ler {arq.name}: {e}")
+
+df_bruto = pd.concat(lista_dfs, ignore_index=True)
+print(f"📊 Total de registros: {len(df_bruto)} linhas.")
+
+def normalizar_valor_bruto(val):
+    """Trata notação científica, ponto flutuante (.0) e nulos do Excel."""
+    if pd.isna(val):
+        return ""
+    
+    # Se já vier como float ou int nativo do Excel
+    if isinstance(val, (float, int)):
+        if pd.isna(val):
+            return ""
+        return f"{int(val)}"
+    
+    v = str(val).strip()
+    if v.lower() in ["nan", "none", "null", "-", "nat", ""]:
+        return ""
+    
+    # Se for string em notação científica (ex: '1,20E+10' ou '1.65E+10')
+    if re.search(r"[eE][+-]?\d+", v):
+        try:
+            num = float(v.replace(",", "."))
+            return f"{int(num)}"
+        except Exception:
+            pass
+            
+    # Se for string numérica terminada em .0 (ex: '39693466810.0')
+    if re.match(r"^\d+\.0+$", v):
+        return v.split(".")[0]
+        
+    return v
+
+def limpar_placa(val):
+    if pd.isna(val):
+        return ""
+    v = str(val).strip().upper()
+    placa = re.sub(r"[^A-Z0-9]", "", v)
+    return placa if len(placa) == 7 else ""
+
+def limpar_cpf_cnpj(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    if not nums:
+        return ""
+    
+    # Se o número foi truncado na exportação (ex: 12000000000), não gera nó falso
+    if nums.endswith("0000000"):
+        return ""
+
+    # CPF: completa zeros à esquerda se perdeu na conversão (ex: 3116657807 -> 03116657807)
+    if len(nums) <= 11:
+        nums = nums.zfill(11)
+        # Validação básica: descarta sequências inválidas conhecidas
+        if len(set(nums)) == 1:
+            return ""
+        return nums
+    
+    # CNPJ: completa até 14 dígitos
+    elif len(nums) <= 14:
+        return nums.zfill(14)
+        
+    return nums
+
+def limpar_tel(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    
+    # Descarta telefones truncados por notação científica sem resolução
+    if nums.endswith("000000"):
+        return ""
+        
+    # Remove zero inicial de DDD se houver (ex: 0119... -> 119...)
+    if len(nums) in [11, 12] and nums.startswith("0"):
+        nums = nums[1:]
+        
+    # Mantém apenas telefones com tamanho plausível (fixo 10 ou celular 11 dígitos com DDD)
+    return nums if len(nums) in [10, 11] else ""
+
+def encontrar_col(df, nomes):
+    colunas_df = {str(c).strip().lower(): c for c in df.columns}
+    
+    # 1. Busca exata prioritária
+    for n in nomes:
+        if n in colunas_df:
+            return colunas_df[n]
+            
+    # 2. Busca parcial (fallback)
+    for c_low, c_orig in colunas_df.items():
+        if any(n in c_low for n in nomes):
+            return c_orig
+    return None
+
+col_cpf = encontrar_col(df_bruto, ["cpf_cnpj_usuario", "cpf", "cnpj", "documento"])
+col_tel = encontrar_col(df_bruto, ["telefone_titular", "telefone", "celular", "tel"])
+col_placa = encontrar_col(df_bruto, ["placa", "veiculo", "veículo"])
+
+print(f"🔍 Colunas mapeadas -> CPF/CNPJ: '{col_cpf}' | Telefone: '{col_tel}' | Placa: '{col_placa}'")
+
+# =====================================================
+# 3. CONSTRUÇÃO DO GRAFO (NETWORKX)
+# =====================================================
+G = nx.Graph()
+
+for _, row in df_bruto.iterrows():
+    cpf = limpar_cpf_cnpj(row[col_cpf]) if col_cpf else ""
+    tel = limpar_tel(row[col_tel]) if col_tel else ""
+    placa = limpar_placa(row[col_placa]) if col_placa else ""
+    
+    entidades_linha = []
+    if cpf:
+        id_cpf = f"CPF_{cpf}"
+        G.add_node(id_cpf, label=f"👤 {cpf}", group="cpf", title=f"CPF/CNPJ: {cpf}")
+        entidades_linha.append(id_cpf)
+    if tel:
+        id_tel = f"TEL_{tel}"
+        G.add_node(id_tel, label=f"🚨 {tel}", group="telefone", title=f"TELEFONE: {tel}")
+        entidades_linha.append(id_tel)
+    if placa:
+        id_placa = f"PLACA_{placa}"
+        G.add_node(id_placa, label=f"🚗 {placa}", group="placa", title=f"PLACA: {placa}")
+        entidades_linha.append(id_placa)
+        
+    for i in range(len(entidades_linha)):
+        for j in range(i + 1, len(entidades_linha)):
+            G.add_edge(entidades_linha[i], entidades_linha[j])
+
+componentes = list(nx.connected_components(G))
+componentes.sort(key=len, reverse=True)
+
+print(f"⚡ Vínculos processados: {len(componentes)} células independentes encontradas.")
+
+# =====================================================
+# 4. EXPORTAÇÃO ESTRUTURADA
+# =====================================================
+vis_nodes = []
+vis_edges = []
+cluster_summary = []
+
+for cluster_id, comp in enumerate(componentes, 1):
+    subgrafo = G.subgraph(comp)
+    qtd_nos = len(comp)
+    
+    graus = dict(subgrafo.degree())
+    maior_hub_id = max(graus, key=graus.get)
+    maior_hub_nome = G.nodes[maior_hub_id]["label"]
+    
+    cluster_summary.append({
+        "cluster_id": cluster_id,
+        "tamanho": qtd_nos,
+        "hub": maior_hub_nome,
+        "grau_hub": graus[maior_hub_id]
+    })
+    
+    for n in comp:
+        n_data = G.nodes[n]
+        vis_nodes.append({
+            "id": n,
+            "label": n_data["label"],
+            "group": n_data["group"],
+            "title": n_data["title"],
+            "cluster": cluster_id,
+            "degree": graus[n]
+        })
+        
+    for u, v in subgrafo.edges():
+        vis_edges.append({
+            "from": u,
+            "to": v,
+            "cluster": cluster_id
+        })
+
+# =====================================================
+# 5. GERADOR DO DASHBOARD FORENSE (i2 VIEW)
+# =====================================================
+html_code = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel Forense i2 - Análise de Vínculos</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
+        body {{ display: flex; height: 100vh; background-color: #0B0F19; color: #E2E8F0; overflow: hidden; }}
+        .sidebar {{ width: 340px; background: #111827; border-right: 1px solid #1F2937; padding: 20px; display: flex; flex-direction: column; gap: 14px; z-index: 10; box-shadow: 4px 0 15px rgba(0,0,0,0.5); }}
+        .header h2 {{ font-size: 15px; color: #38BDF8; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }}
+        .header p {{ font-size: 11px; color: #94A3B8; margin-top: 4px; }}
+        .box-section {{ background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }}
+        .box-section label {{ font-size: 11px; font-weight: 600; text-transform: uppercase; color: #94A3B8; }}
+        select, input {{ width: 100%; background: #0F172A; border: 1px solid #334155; color: #F8FAFC; padding: 8px; border-radius: 4px; font-size: 12px; outline: none; }}
+        select:focus, input:focus {{ border-color: #38BDF8; }}
+        .btn {{ background: #2563EB; border: none; color: white; padding: 9px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; }}
+        .btn:hover {{ background: #1D4ED8; }}
+        .btn-outline {{ background: transparent; border: 1px solid #475569; color: #CBD5E1; }}
+        .btn-outline:hover {{ background: #1E293B; color: white; }}
+        .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+        .stat-card {{ background: #0F172A; padding: 8px; border-radius: 4px; border: 1px solid #1E293B; text-align: center; }}
+        .stat-card span {{ display: block; font-size: 10px; color: #64748B; text-transform: uppercase; }}
+        .stat-card b {{ font-size: 16px; color: #38BDF8; }}
+        .canvas-area {{ flex: 1; position: relative; background: radial-gradient(circle at 50% 50%, #151E32 0%, #080D1A 100%); }}
+        #network {{ width: 100%; height: 100%; }}
+        .floating-topbar {{ position: absolute; top: 16px; right: 16px; background: rgba(17, 24, 39, 0.95); border: 1px solid #374151; border-radius: 6px; padding: 8px 14px; display: flex; gap: 16px; font-size: 11px; z-index: 5; pointer-events: none; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; }}
+        .badge {{ width: 10px; height: 10px; border-radius: 2px; }}
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="header">
+            <h2>Investigação de Vínculos</h2>
+            <p>Consolidado Forense com Tratamento Numérico</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span>Células</span>
+                <b>{len(componentes)}</b>
+            </div>
+            <div class="stat-card">
+                <span>Entidades</span>
+                <b>{len(G.nodes)}</b>
+            </div>
+        </div>
+
+        <div class="box-section">
+            <label>Seletor de Célula / Quadrilha</label>
+            <select id="sel-cluster" onchange="filterCluster(this.value)">
+                <option value="ALL">🌐 Visualizar Maiores Redes</option>
+                {"".join([f'<option value="{c["cluster_id"]}">Célula #{c["cluster_id"]} ({c["tamanho"]} nós - Hub: {c["hub"]})</option>' for c in cluster_summary[:50]])}
+            </select>
+        </div>
+
+        <div class="box-section">
+            <label>Buscar Entidade</label>
+            <input type="text" id="txt-search" placeholder="CPF, Telefone ou Placa..." onkeyup="searchNode(this.value)">
+        </div>
+
+        <div class="box-section" style="margin-top: auto; display: flex; flex-direction: column; gap: 8px;">
+            <button class="btn btn-outline" onclick="network.fit({{animation: {{duration: 400}}}})">🔍 Centralizar Visão</button>
+            <button class="btn btn-outline" id="btn-physics" onclick="togglePhysics()">⏸️ Congelar Posições</button>
+            <button class="btn" onclick="exportHDImage()">📷 Salvar Evidência (PNG)</button>
+        </div>
+    </div>
+
+    <div class="canvas-area">
+        <div class="floating-topbar">
+            <div class="legend-item"><div class="badge" style="background:#B91C1C;"></div> <span>Telefone</span></div>
+            <div class="legend-item"><div class="badge" style="background:#0284C7;"></div> <span>CPF / CNPJ</span></div>
+            <div class="legend-item"><div class="badge" style="background:#7C3AED;"></div> <span>Placa</span></div>
+        </div>
+        <div id="network"></div>
+    </div>
+
+    <script>
+        const rawNodes = {json.dumps(vis_nodes)};
+        const rawEdges = {json.dumps(vis_edges)};
+        
+        const nodesDataSet = new vis.DataSet();
+        const edgesDataSet = new vis.DataSet();
+        
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        let physicsEnabled = true;
+        
+        const options = {{
+            groups: {{
+                telefone: {{
+                    color: {{ background: "#B91C1C", border: "#EF4444", highlight: {{ background: "#EF4444", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }},
+                cpf: {{
+                    color: {{ background: "#0284C7", border: "#38BDF8", highlight: {{ background: "#38BDF8", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }},
+                placa: {{
+                    color: {{ background: "#7C3AED", border: "#A78BFA", highlight: {{ background: "#A78BFA", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }}
+            }},
+            edges: {{
+                color: {{ color: "#475569", highlight: "#38BDF8" }},
+                width: 1.5,
+                smooth: {{ type: "continuous" }}
+            }},
+            physics: {{
+                forceAtlas2Based: {{
+                    gravitationalConstant: -90,
+                    centralGravity: 0.01,
+                    springLength: 180,
+                    springConstant: 0.08,
+                    damping: 0.88
+                }},
+                solver: 'forceAtlas2Based',
+                stabilization: {{ iterations: 150 }}
+            }}
+        }};
+        
+        const network = new vis.Network(container, data, options);
+
+        function filterCluster(cId) {{
+            if (cId === "ALL") {{
+                nodesDataSet.clear();
+                edgesDataSet.clear();
+                nodesDataSet.add(rawNodes.slice(0, 300));
+                edgesDataSet.add(rawEdges.filter(e => nodesDataSet.get(e.from) && nodesDataSet.get(e.to)));
+            }} else {{
+                const numId = parseInt(cId);
+                const filteredNodes = rawNodes.filter(n => n.cluster === numId);
+                const filteredEdges = rawEdges.filter(e => e.cluster === numId);
+                
+                nodesDataSet.clear();
+                edgesDataSet.clear();
+                nodesDataSet.add(filteredNodes);
+                edgesDataSet.add(filteredEdges);
+            }}
+            setTimeout(() => network.fit({{animation: {{duration: 400}}}}), 150);
+        }}
+
+        function searchNode(text) {{
+            const val = text.trim().toLowerCase();
+            if (!val) return;
+            
+            const found = rawNodes.find(n => n.label.toLowerCase().includes(val) || n.title.toLowerCase().includes(val));
+            if (found) {{
+                const currentCluster = document.getElementById('sel-cluster').value;
+                if (currentCluster !== "ALL" && parseInt(currentCluster) !== found.cluster) {{
+                    document.getElementById('sel-cluster').value = found.cluster;
+                    filterCluster(found.cluster);
+                }}
+                setTimeout(() => {{
+                    network.focus(found.id, {{ scale: 1.4, animation: {{ duration: 500 }} }});
+                    network.selectNodes([found.id]);
+                }}, 200);
+            }}
+        }}
+
+        function togglePhysics() {{
+            physicsEnabled = !physicsEnabled;
+            network.setOptions({{ physics: {{ enabled: physicsEnabled }} }});
+            document.getElementById('btn-physics').innerText = physicsEnabled ? '⏸️ Congelar Posições' : '▶️ Ativar Física';
+        }}
+
+        function exportHDImage() {{
+            const canvas = container.querySelector('canvas');
+            const link = document.createElement('a');
+            link.download = 'investigacao_vinculos.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }}
+
+        filterCluster("1");
+        document.getElementById('sel-cluster').value = "1";
+    </script>
+</body>
+</html>
+"""
+
+caminho_saida = Path(__file__).parent / "painel_investigacao_i2.html"
+with open(caminho_saida, "w", encoding="utf-8") as f:
+    f.write(html_code)
+
+print(f"🚀 Base tratada e painel gerado em: '{caminho_saida.name}'.")
+webbrowser.open(str(caminho_saida))
