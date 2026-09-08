@@ -1,0 +1,634 @@
+import pandas as pd
+import json
+import re
+import os
+from pathlib import Path
+import networkx as nx
+import webbrowser
+
+# =====================================================
+# 1. LOCALIZAÇÃO E LEITURA DOS ARQUIVOS
+# =====================================================
+PASTA_ORIGEM = Path(__file__).parent / "casos_duplicidade"
+PASTA_ORIGEM.mkdir(exist_ok=True)
+
+arquivos_excel = list(PASTA_ORIGEM.glob("*.xlsx"))
+
+if not arquivos_excel:
+    print(f"⚠️ Nenhum arquivo .xlsx encontrado em: {PASTA_ORIGEM}")
+    print("Coloque os arquivos diários na pasta 'casos_duplicidade' e execute novamente.")
+    exit()
+
+print(f"📂 Encontrados {len(arquivos_excel)} arquivos diários. Consolidando...")
+
+lista_dfs = []
+for arq in arquivos_excel:
+    try:
+        temp_df = pd.read_excel(arq)
+        temp_df["_ARQUIVO_ORIGEM"] = arq.name
+        lista_dfs.append(temp_df)
+    except Exception as e:
+        print(f"Erro ao ler {arq.name}: {e}")
+
+df_bruto = pd.concat(lista_dfs, ignore_index=True)
+print(f"📊 Total de registros brutos: {len(df_bruto)} linhas.")
+
+# =====================================================
+# 2. TRATAMENTO FORENSE DE DADOS
+# =====================================================
+def normalizar_valor_bruto(val):
+    """Trata notação científica (1,20E+10), float com .0 e nulos."""
+    if pd.isna(val):
+        return ""
+    if isinstance(val, (float, int)):
+        if pd.isna(val):
+            return ""
+        return f"{int(val)}"
+    
+    v = str(val).strip()
+    if v.lower() in ["nan", "none", "null", "-", "nat", ""]:
+        return ""
+    
+    if re.search(r"[eE][+-]?\d+", v):
+        try:
+            num = float(v.replace(",", "."))
+            return f"{int(num)}"
+        except Exception:
+            pass
+            
+    if re.match(r"^\d+\.0+$", v):
+        return v.split(".")[0]
+        
+    return v
+
+def limpar_placa(val):
+    if pd.isna(val):
+        return ""
+    v = str(val).strip().upper()
+    placa = re.sub(r"[^A-Z0-9]", "", v)
+    return placa if len(placa) == 7 else ""
+
+def limpar_cpf_cnpj(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    if not nums or nums.endswith("0000000"):
+        return ""
+    
+    # CPF: recupera zeros cortados à esquerda (ex: 3116657807 -> 03116657807)
+    if len(nums) <= 11:
+        nums = nums.zfill(11)
+        if len(set(nums)) == 1:
+            return ""
+        return nums
+    elif len(nums) <= 14:
+        return nums.zfill(14)
+    return nums
+
+def formatar_cpf_cnpj(digits):
+    if len(digits) == 11:
+        return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+    elif len(digits) == 14:
+        return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    return digits
+
+def limpar_tel(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    if not nums or nums.endswith("000000"):
+        return ""
+    if len(nums) in [12, 13] and nums.startswith("55"):
+        nums = nums[2:]
+    if len(nums) in [11, 12] and nums.startswith("0"):
+        nums = nums[1:]
+    return nums if len(nums) in [10, 11] else ""
+
+def formatar_tel(digits):
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    elif len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    return digits
+
+def encontrar_col(df, nomes):
+    colunas_df = {re.sub(r'[^a-z0-9]', '', str(c).strip().lower()): c for c in df.columns}
+    for n in nomes:
+        n_clean = re.sub(r'[^a-z0-9]', '', n.lower())
+        if n_clean in colunas_df:
+            return colunas_df[n_clean]
+    for c_clean, c_orig in colunas_df.items():
+        if any(re.sub(r'[^a-z0-9]', '', n.lower()) in c_clean for n in nomes):
+            return c_orig
+    return None
+
+col_cpf = encontrar_col(df_bruto, ["cpf_cnpj_usuario", "cpf_cnpj", "cpf", "cnpj", "documento"])
+col_tel = encontrar_col(df_bruto, ["telefone_titular", "telefone", "celular", "tel", "contato"])
+col_placa = encontrar_col(df_bruto, ["placa", "veiculo", "veículo", "auto"])
+col_nome = encontrar_col(df_bruto, ["titular", "nome_cliente", "nome", "segurado", "cliente"])
+
+print(f"🔍 Colunas Mapeadas:")
+print(f"  • CPF/CNPJ: {col_cpf}")
+print(f"  • Telefone: {col_tel}")
+print(f"  • Placa:    {col_placa}")
+print(f"  • Titular:  {col_nome}\n")
+
+# =====================================================
+# 3. CONSTRUÇÃO DO GRAFO (APENAS ENTIDADES FIXAS)
+# =====================================================
+G = nx.Graph()
+edges_set = set()
+
+cores_grupos = {
+    "telefone": {"background": "#B91C1C", "border": "#EF4444"},
+    "cpf": {"background": "#0284C7", "border": "#38BDF8"},
+    "placa": {"background": "#7C3AED", "border": "#A78BFA"}
+}
+
+def add_edge_clean(u, v):
+    par = tuple(sorted([str(u), str(v)]))
+    if par not in edges_set:
+        edges_set.add(par)
+        G.add_edge(u, v)
+
+for idx, row in df_bruto.iterrows():
+    cpf_raw = limpar_cpf_cnpj(row[col_cpf]) if col_cpf else ""
+    tel_raw = limpar_tel(row[col_tel]) if col_tel else ""
+    placa_raw = limpar_placa(row[col_placa]) if col_placa else ""
+    nome_raw = str(row[col_nome]).strip() if col_nome and pd.notna(row[col_nome]) else ""
+    
+    # Exige ao menos duas entidades para que exista relação na linha
+    entidades_presentes = sum([bool(cpf_raw or nome_raw), bool(tel_raw), bool(placa_raw)])
+    if entidades_presentes < 2:
+        continue
+
+    # 1. Nó Titular
+    titular_id = f"CPF_{cpf_raw}" if cpf_raw else f"NOME_{nome_raw}"
+    label_titular = f"👤 {nome_raw}" if nome_raw else (f"👤 {formatar_cpf_cnpj(cpf_raw)}" if cpf_raw else f"👤 Registro #{idx+1}")
+    title_titular = f"TITULAR: {nome_raw or 'Não informado'}\nCPF: {formatar_cpf_cnpj(cpf_raw)}"
+    
+    if titular_id not in G:
+        G.add_node(titular_id, label=label_titular, group="cpf", title=title_titular, base_size=13, level=2)
+    
+    # 2. Nó Telefone
+    if tel_raw:
+        tel_id = f"TEL_{tel_raw}"
+        tel_fmt = formatar_tel(tel_raw)
+        if tel_id not in G:
+            G.add_node(tel_id, label=f"🚨 {tel_fmt}", group="telefone", title=f"TELEFONE DE CONTATO:\n{tel_fmt}", base_size=13, level=1)
+        add_edge_clean(titular_id, tel_id)
+        
+    # 3. Nó Placa
+    if placa_raw:
+        placa_id = f"PLACA_{placa_raw}"
+        placa_fmt = f"{placa_raw[:3]}-{placa_raw[3:]}" if len(placa_raw) == 7 else placa_raw
+        if placa_id not in G:
+            G.add_node(placa_id, label=f"🚗 {placa_fmt}", group="placa", title=f"PLACA DO VEÍCULO:\n{placa_fmt}", base_size=13, level=3)
+        add_edge_clean(titular_id, placa_id)
+
+# Remove nós órfãos (sem conexões) para limpar a memória
+G.remove_nodes_from(list(nx.isolates(G)))
+
+componentes = list(nx.connected_components(G))
+componentes.sort(key=len, reverse=True)
+
+print(f"⚡ Estrutura gerada: {len(componentes)} células independentes encontradas.")
+
+# =====================================================
+# 4. EXPORTAÇÃO ESTRUTURADA
+# =====================================================
+vis_nodes = []
+vis_edges = []
+cluster_summary = []
+
+for cluster_id, comp in enumerate(componentes, 1):
+    subgrafo = G.subgraph(comp)
+    qtd_entidades = len(comp)
+    
+    graus = dict(subgrafo.degree())
+    maior_hub_id = max(graus, key=graus.get)
+    maior_hub_label = G.nodes[maior_hub_id]["label"]
+    
+    cluster_summary.append({
+        "cluster_id": cluster_id,
+        "tamanho": qtd_entidades,
+        "hub": maior_hub_label,
+        "grau_hub": graus[maior_hub_id]
+    })
+    
+    for n in comp:
+        n_data = G.nodes[n]
+        cfg_cor = cores_grupos[n_data["group"]]
+        vis_nodes.append({
+            "id": n,
+            "label": n_data["label"],
+            "group": n_data["group"],
+            "title": n_data["title"],
+            "cluster": cluster_id,
+            "base_size": n_data["base_size"],
+            "level": n_data.get("level", 2),
+            "color": {
+                "background": cfg_cor["background"],
+                "border": cfg_cor["border"],
+                "highlight": {"background": cfg_cor["border"], "border": "#FFFFFF"}
+            },
+            "font": {"color": "#FFFFFF", "size": n_data["base_size"], "bold": True, "face": "Segoe UI"}
+        })
+        
+    for u, v in subgrafo.edges():
+        vis_edges.append({
+            "from": u,
+            "to": v,
+            "cluster": cluster_id,
+            "color": {"color": "#475569"},
+            "width": 2.0
+        })
+
+# =====================================================
+# 5. GERADOR DO PAINEL FORENSE i2
+# =====================================================
+html_code = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel Forense de Vínculos - i2 Analyst</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
+        body {{ display: flex; height: 100vh; background-color: #06090F; color: #F1F5F9; overflow: hidden; }}
+        
+        .sidebar {{ width: 330px; min-width: 330px; background: #0D131F; border-right: 1px solid #1E293B; padding: 18px; display: flex; flex-direction: column; gap: 12px; z-index: 10; overflow-y: auto; height: 100vh; }}
+        .header h2 {{ font-size: 15px; color: #38BDF8; font-weight: 700; letter-spacing: -0.3px; }}
+        .header p {{ font-size: 11px; color: #94A3B8; margin-top: 2px; }}
+        
+        .box-section {{ background: #131D2F; border: 1px solid #1E293B; border-radius: 6px; padding: 11px; display: flex; flex-direction: column; gap: 8px; }}
+        .box-section h3 {{ font-size: 10.5px; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px; }}
+        
+        .checkbox-label {{ display: flex; align-items: center; gap: 9px; font-size: 12px; cursor: pointer; color: #CBD5E1; }}
+        .checkbox-label input {{ cursor: pointer; width: 15px; height: 15px; accent-color: #38BDF8; }}
+        
+        select, input[type="text"] {{ width: 100%; background: #0B0F19; border: 1px solid #334155; color: #F8FAFC; padding: 8px; border-radius: 5px; font-size: 12px; outline: none; }}
+        select:focus, input[type="text"]:focus {{ border-color: #38BDF8; }}
+        
+        .btn {{ background: #1E293B; border: 1px solid #334155; color: #F8FAFC; padding: 8px 10px; border-radius: 5px; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: 0.2s; text-align: center; }}
+        .btn:hover {{ background: #334155; }}
+        .btn-action {{ background: #0284C7; border-color: #38BDF8; color: #FFFFFF; font-weight: bold; }}
+        .btn-action:hover {{ background: #0369A1; }}
+        
+        .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+        .stat-card {{ background: #0B0F19; padding: 6px; border-radius: 4px; border: 1px solid #1E293B; text-align: center; }}
+        .stat-card span {{ display: block; font-size: 9.5px; color: #64748B; text-transform: uppercase; }}
+        .stat-card b {{ font-size: 15px; color: #38BDF8; }}
+        
+        .range-slider {{ display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #94A3B8; }}
+        .range-slider input {{ cursor: pointer; accent-color: #38BDF8; }}
+        
+        .canvas-area {{ flex: 1; position: relative; height: 100vh; background: radial-gradient(circle at 50% 50%, #111A2E 0%, #06090F 100%); overflow: hidden; }}
+        #network {{ width: 100%; height: 100%; position: absolute; top: 0; left: 0; }}
+        
+        .floating-topbar {{ position: absolute; top: 14px; right: 14px; background: rgba(13, 19, 31, 0.94); border: 1px solid #1E293B; border-radius: 6px; padding: 8px 14px; display: flex; gap: 16px; font-size: 11px; z-index: 5; pointer-events: none; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; font-weight: 600; }}
+        .badge {{ width: 11px; height: 11px; border-radius: 2px; }}
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="header">
+            <h2>MAPA DE VÍNCULOS FORENSES</h2>
+            <p>Clique em um nó para isolar sua árvore de conexão.</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span>Células / Grupos</span>
+                <b>{len(componentes)}</b>
+            </div>
+            <div class="stat-card">
+                <span>Total Entidades</span>
+                <b>{len(G.nodes)}</b>
+            </div>
+        </div>
+
+        <div class="box-section">
+            <h3>Seletor de Célula / Quadrilha</h3>
+            <select id="sel-cluster" onchange="filterCluster(this.value)">
+                {"".join([f'<option value="{c["cluster_id"]}">Célula #{c["cluster_id"]}: {c["tamanho"]} registros (Âncora: {c["hub"]})</option>' for c in cluster_summary[:100]])}
+            </select>
+        </div>
+
+        <div class="box-section">
+            <h3>Buscar Entidade (Auto-Zoom)</h3>
+            <input type="text" id="txt-search" placeholder="CPF, Telefone ou Placa..." onkeyup="searchNode(this.value)">
+        </div>
+
+        <div class="box-section">
+            <h3>Estilo de Layout (i2 Analyst)</h3>
+            <select id="sel-layout" onchange="changeLayout(this.value)">
+                <option value="physics">🌀 Teia Fluida (Física Orgânica)</option>
+                <option value="hierarchical_ud">🌲 Árvore em Níveis (Cima p/ Baixo)</option>
+                <option value="hierarchical_lr">🎯 Fluxo Horizontal (Esq. p/ Direita)</option>
+            </select>
+        </div>
+
+        <div class="box-section">
+            <h3>Entidades Visíveis</h3>
+            <label class="checkbox-label"><input type="checkbox" id="chk-tel" checked onchange="applyFilters()"> 🚨 Telefones</label>
+            <label class="checkbox-label"><input type="checkbox" id="chk-cpf" checked onchange="applyFilters()"> 👤 Titulares / CPFs</label>
+            <label class="checkbox-label"><input type="checkbox" id="chk-placa" checked onchange="applyFilters()"> 🚗 Placas</label>
+        </div>
+
+        <div class="box-section">
+            <h3>Ajuste do Texto</h3>
+            <label class="checkbox-label" style="color:#38BDF8; font-weight:bold;">
+                <input type="checkbox" id="chk-adaptive-font" checked onchange="updateFontScale()"> 🔍 Texto Adaptativo ao Zoom
+            </label>
+            <div class="range-slider" style="margin-top: 4px;">
+                <span>Tamanho Base: <b id="lbl-font-val" style="color:white;">13px</b></span>
+                <input type="range" id="rng-font" min="10" max="22" value="13" oninput="onFontSizeSlider(this.value)">
+            </div>
+        </div>
+
+        <div class="box-section" style="margin-top: auto;">
+            <button class="btn" onclick="network.fit({{animation: {{duration: 400}}}})">🔍 Centralizar Visão</button>
+            <button class="btn" id="btn-physics" onclick="togglePhysics()">⏸️ Congelar Nós</button>
+            <button class="btn btn-action" onclick="copyImageToClipboard()">📋 Copiar Imagem (Ctrl+V no E-mail)</button>
+            <button class="btn" onclick="exportHDImage()">💾 Baixar Imagem (PNG)</button>
+        </div>
+    </div>
+
+    <div class="canvas-area">
+        <div class="floating-topbar">
+            <div class="legend-item"><div class="badge" style="background:#B91C1C;"></div> <span>Telefone</span></div>
+            <div class="legend-item"><div class="badge" style="background:#0284C7;"></div> <span>Titular / CPF</span></div>
+            <div class="legend-item"><div class="badge" style="background:#7C3AED;"></div> <span>Placa</span></div>
+        </div>
+        <div id="network"></div>
+    </div>
+
+    <script>
+        const allNodes = {json.dumps(vis_nodes)};
+        const allEdges = {json.dumps(vis_edges)};
+        
+        const nodesDataSet = new vis.DataSet();
+        const edgesDataSet = new vis.DataSet();
+        
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        
+        let physicsEnabled = true;
+        let globalFontMultiplier = 1.0;
+        let isZoomUpdating = false;
+        let currentClusterId = "1";
+        
+        const options = {{
+            groups: {{
+                telefone: {{
+                    color: {{ background: "#B91C1C", border: "#EF4444", highlight: {{ background: "#EF4444", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }},
+                cpf: {{
+                    color: {{ background: "#0284C7", border: "#38BDF8", highlight: {{ background: "#38BDF8", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }},
+                placa: {{
+                    color: {{ background: "#7C3AED", border: "#A78BFA", highlight: {{ background: "#A78BFA", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI" }}
+                }}
+            }},
+            edges: {{
+                color: {{ color: "#475569", highlight: "#38BDF8" }},
+                width: 2.0,
+                smooth: {{ type: "continuous" }}
+            }},
+            physics: {{
+                barnesHut: {{
+                    gravitationalConstant: -3500,
+                    centralGravity: 0.15,
+                    springLength: 140,
+                    springConstant: 0.05,
+                    damping: 0.85,
+                    avoidOverlap: 0.2
+                }},
+                solver: 'barnesHut',
+                stabilization: {{
+                    enabled: true,
+                    iterations: 100,
+                    updateInterval: 25
+                }}
+            }},
+            interaction: {{
+                hover: true,
+                zoomView: true,
+                dragNodes: true
+            }}
+        }};
+        
+        const network = new vis.Network(container, data, options);
+
+        // Foco e Isolamento ao Clicar em um Nó
+        network.on("click", function(params) {{
+            if (params.nodes.length > 0) {{
+                const selectedNodeId = params.nodes[0];
+                const connectedNodes = network.getConnectedNodes(selectedNodeId);
+                connectedNodes.push(selectedNodeId);
+                
+                const updates = nodesDataSet.get().map(node => {{
+                    const orig = allNodes.find(item => item.id === node.id);
+                    return {{
+                        id: node.id,
+                        opacity: connectedNodes.includes(node.id) ? 1.0 : 0.12,
+                        color: orig.color
+                    }};
+                }});
+                nodesDataSet.update(updates);
+            }} else {{
+                const updates = nodesDataSet.get().map(node => {{
+                    const orig = allNodes.find(item => item.id === node.id);
+                    return {{
+                        id: node.id,
+                        opacity: 1.0,
+                        color: orig.color
+                    }};
+                }});
+                nodesDataSet.update(updates);
+            }}
+        }});
+
+        function updateFontScale() {{
+            if (!document.getElementById('chk-adaptive-font').checked) return;
+            const currentScale = network.getScale();
+            if (!currentScale || currentScale <= 0.05 || isNaN(currentScale)) return;
+            
+            const currentNodes = nodesDataSet.get();
+            const updates = [];
+            
+            currentNodes.forEach(n => {{
+                const orig = allNodes.find(item => item.id === n.id);
+                if (!orig) return;
+                
+                let targetSize = Math.round((orig.base_size * globalFontMultiplier) / currentScale);
+                targetSize = Math.max(9, Math.min(36, targetSize));
+                
+                updates.push({{
+                    id: n.id,
+                    font: {{ size: targetSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }},
+                    color: orig.color
+                }});
+            }});
+            
+            if (updates.length > 0) {{
+                nodesDataSet.update(updates);
+            }}
+        }}
+
+        network.on("zoom", function() {{
+            if (document.getElementById('chk-adaptive-font').checked) {{
+                if (!isZoomUpdating) {{
+                    isZoomUpdating = true;
+                    requestAnimationFrame(() => {{
+                        updateFontScale();
+                        isZoomUpdating = false;
+                    }});
+                }}
+            }}
+        }});
+
+        function onFontSizeSlider(val) {{
+            globalFontMultiplier = parseFloat(val) / 13.0;
+            document.getElementById('lbl-font-val').innerText = val + 'px';
+            updateFontScale();
+        }}
+
+        function applyFilters() {{
+            const showTel = document.getElementById('chk-tel').checked;
+            const showCpf = document.getElementById('chk-cpf').checked;
+            const showPlaca = document.getElementById('chk-placa').checked;
+            
+            const activeGroups = [];
+            if (showTel) activeGroups.push('telefone');
+            if (showCpf) activeGroups.push('cpf');
+            if (showPlaca) activeGroups.push('placa');
+            
+            const numId = parseInt(currentClusterId);
+            let filteredNodes = allNodes.filter(n => activeGroups.includes(n.group) && n.cluster === numId);
+            
+            const visibleIds = new Set(filteredNodes.map(n => n.id));
+            const filteredEdges = allEdges.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to));
+            
+            nodesDataSet.clear();
+            edgesDataSet.clear();
+            nodesDataSet.add(filteredNodes);
+            edgesDataSet.add(filteredEdges);
+            
+            setTimeout(() => {{
+                network.fit({{ animation: {{ duration: 350 }} }});
+                setTimeout(updateFontScale, 150);
+            }}, 100);
+        }}
+
+        function filterCluster(cId) {{
+            currentClusterId = cId;
+            applyFilters();
+        }}
+
+        function changeLayout(mode) {{
+            if (mode === "physics") {{
+                network.setOptions({{
+                    layout: {{ hierarchical: false }},
+                    physics: {{
+                        enabled: true,
+                        solver: 'barnesHut'
+                    }}
+                }});
+            }} else if (mode === "hierarchical_ud") {{
+                network.setOptions({{
+                    layout: {{
+                        hierarchical: {{
+                            direction: "UD",
+                            sortMethod: "directed",
+                            levelSeparation: 140,
+                            nodeSpacing: 160
+                        }}
+                    }},
+                    physics: {{ enabled: false }}
+                }});
+            }} else if (mode === "hierarchical_lr") {{
+                network.setOptions({{
+                    layout: {{
+                        hierarchical: {{
+                            direction: "LR",
+                            sortMethod: "directed",
+                            levelSeparation: 200,
+                            nodeSpacing: 90
+                        }}
+                    }},
+                    physics: {{ enabled: false }}
+                }});
+            }}
+            setTimeout(() => network.fit({{ animation: {{ duration: 350 }} }}), 150);
+        }}
+
+        function searchNode(text) {{
+            const val = text.trim().toLowerCase();
+            if (!val) return;
+            
+            const found = allNodes.find(n => n.label.toLowerCase().includes(val) || n.title.toLowerCase().includes(val));
+            if (found) {{
+                if (currentClusterId !== String(found.cluster)) {{
+                    document.getElementById('sel-cluster').value = String(found.cluster);
+                    currentClusterId = String(found.cluster);
+                    applyFilters();
+                }}
+                setTimeout(() => {{
+                    network.focus(found.id, {{ scale: 1.3, animation: {{ duration: 400 }} }});
+                    network.selectNodes([found.id]);
+                }}, 250);
+            }}
+        }}
+
+        function togglePhysics() {{
+            physicsEnabled = !physicsEnabled;
+            network.setOptions({{ physics: {{ enabled: physicsEnabled }} }});
+            document.getElementById('btn-physics').innerText = physicsEnabled ? '⏸️ Congelar Nós' : '▶️ Ativar Física';
+        }}
+
+        async function copyImageToClipboard() {{
+            try {{
+                const canvas = container.querySelector('canvas');
+                canvas.toBlob(async function(blob) {{
+                    await navigator.clipboard.write([
+                        new ClipboardItem({{ 'image/png': blob }})
+                    ]);
+                    alert("✅ Imagem copiada com sucesso!\\nBasta ir no Outlook ou Teams e pressionar Ctrl + V.");
+                }});
+            }} catch (err) {{
+                alert("Para copiar a imagem, utilize o botão 'Baixar Imagem (PNG)' ou autorize o navegador.");
+            }}
+        }}
+
+        function exportHDImage() {{
+            const canvas = container.querySelector('canvas');
+            const link = document.createElement('a');
+            link.download = 'dossie_evidencia_fraude.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }}
+
+        // Inicia automaticamente carregando a Célula #1
+        if (document.getElementById('sel-cluster').options.length > 0) {{
+            const firstVal = document.getElementById('sel-cluster').options[0].value;
+            document.getElementById('sel-cluster').value = firstVal;
+            filterCluster(firstVal);
+        }}
+    </script>
+</body>
+</html>
+"""
+
+caminho_saida = Path(__file__).parent / "painel_investigacao_i2.html"
+with open(caminho_saida, "w", encoding="utf-8") as f:
+    f.write(html_code)
+
+print(f"🚀 Sucesso absoluto! Arquivo '{caminho_saida.name}' gerado.")
+webbrowser.open(str(caminho_saida))
