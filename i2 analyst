@@ -1,0 +1,367 @@
+import pandas as pd
+import json
+import re
+import os
+from pathlib import Path
+import networkx as nx
+import webbrowser
+
+# =====================================================
+# 1. CAMINHO DA PASTA COM AS EXTRAÇÕES DIÁRIAS
+# =====================================================
+# Dica: Você pode apontar direto para a rede (r"T:\Corporativo\...\Duplicidade de Placa")
+# ou copiar alguns arquivos para uma pasta local "casos_duplicidade" para testar.
+
+PASTA_ORIGEM = Path(__file__).parent / "casos_duplicidade"
+
+# Se a pasta local não existir, cria para você testar
+PASTA_ORIGEM.mkdir(exist_ok=True)
+
+arquivos_excel = list(PASTA_ORIGEM.glob("*.xlsx"))
+
+if not arquivos_excel:
+    print(f"⚠️ Nenhum arquivo .xlsx encontrado em: {PASTA_ORIGEM}")
+    print("Copie alguns arquivos diários para dentro dessa pasta e execute novamente.")
+    exit()
+
+print(f"📂 Encontrados {len(arquivos_excel)} arquivos diários. Consolidando base histórica...")
+
+# =====================================================
+# 2. CONSOLIDAÇÃO E LIMPEZA DOS DADOS
+# =====================================================
+lista_dfs = []
+
+for arq in arquivos_excel:
+    try:
+        temp_df = pd.read_excel(arq)
+        temp_df["_ARQUIVO_ORIGEM"] = arq.name
+        lista_dfs.append(temp_df)
+    except Exception as e:
+        print(f"Erro ao ler {arq.name}: {e}")
+
+df_bruto = pd.concat(lista_dfs, ignore_index=True)
+print(f"📊 Total de registros consolidados: {len(df_bruto)} linhas.")
+
+def limpar_str(val):
+    if pd.isna(val):
+        return ""
+    v = str(val).strip()
+    return "" if v.lower() in ["nan", "none", "null", "-", "nat"] else v
+
+def limpar_placa(val):
+    v = limpar_str(val).upper()
+    return re.sub(r"[^A-Z0-9]", "", v)
+
+def limpar_tel(val):
+    v = limpar_str(val)
+    nums = re.sub(r"\D", "", v)
+    return nums if len(nums) >= 8 else v
+
+def encontrar_col(df, nomes):
+    for c in df.columns:
+        c_low = str(c).lower()
+        if any(n in c_low for n in nomes):
+            return c
+    return None
+
+col_cpf = encontrar_col(df_bruto, ["cpf", "cnpj", "documento", "titular"])
+col_tel = encontrar_col(df_bruto, ["telefone", "celular", "fone", "tel", "contato"])
+col_placa = encontrar_col(df_bruto, ["placa", "veiculo", "veículo", "auto"])
+
+print(f"🔍 Colunas detectadas: CPF/CNPJ: '{col_cpf}' | Tel: '{col_tel}' | Placa: '{col_placa}'")
+
+# =====================================================
+# 3. CONSTRUÇÃO MATEMÁTICA DOS GRAFOS E CLUSTERS (i2)
+# =====================================================
+G = nx.Graph()
+linhas_processadas = []
+
+for _, row in df_bruto.iterrows():
+    cpf = limpar_str(row[col_cpf]) if col_cpf else ""
+    tel = limpar_tel(row[col_tel]) if col_tel else ""
+    placa = limpar_placa(row[col_placa]) if col_placa else ""
+    
+    # Ignora registros completamente vazios
+    if not (cpf or tel or placa):
+        continue
+    
+    entidades_linha = []
+    if cpf:
+        id_cpf = f"CPF_{cpf}"
+        G.add_node(id_cpf, label=f"👤 {cpf}", group="cpf", title=f"CPF/CNPJ: {cpf}")
+        entidades_linha.append(id_cpf)
+    if tel:
+        id_tel = f"TEL_{tel}"
+        G.add_node(id_tel, label=f"🚨 {tel}", group="telefone", title=f"TELEFONE: {tel}")
+        entidades_linha.append(id_tel)
+    if placa:
+        id_placa = f"PLACA_{placa}"
+        G.add_node(id_placa, label=f"🚗 {placa}", group="placa", title=f"PLACA: {placa}")
+        entidades_linha.append(id_placa)
+        
+    # Conecta as entidades que apareceram na mesma linha
+    for i in range(len(entidades_linha)):
+        for j in range(i + 1, len(entidades_linha)):
+            G.add_edge(entidades_linha[i], entidades_linha[j])
+
+# Identifica as Ilhas/Quadrilhas Independentes (Connected Components)
+componentes = list(nx.connected_components(G))
+componentes.sort(key=len, reverse=True) # Ordena dos maiores grupos para os menores
+
+print(f"⚡ Redes de conexões identificadas: {len(componentes)} grupos distintos.")
+
+# =====================================================
+# 4. MONTAGEM DO JSON DE NÓS E ARESTAS COM METADADOS
+# =====================================================
+vis_nodes = []
+vis_edges = []
+cluster_summary = []
+
+for cluster_id, comp in enumerate(componentes, 1):
+    subgrafo = G.subgraph(comp)
+    qtd_nos = len(comp)
+    
+    # Identifica o nó mais central (o maior Hub do cluster)
+    graus = dict(subgrafo.degree())
+    maior_hub_id = max(graus, key=graus.get)
+    maior_hub_nome = G.nodes[maior_hub_id]["label"]
+    
+    cluster_summary.append({
+        "cluster_id": cluster_id,
+        "tamanho": qtd_nos,
+        "hub": maior_hub_nome,
+        "grau_hub": graus[maior_hub_id]
+    })
+    
+    for n in comp:
+        n_data = G.nodes[n]
+        vis_nodes.append({
+            "id": n,
+            "label": n_data["label"],
+            "group": n_data["group"],
+            "title": n_data["title"],
+            "cluster": cluster_id,
+            "degree": graus[n]
+        })
+        
+    for u, v in subgrafo.edges():
+        vis_edges.append({
+            "from": u,
+            "to": v,
+            "cluster": cluster_id
+        })
+
+# =====================================================
+# 5. GERADOR HTML INSPIRADO NO IBM i2
+# =====================================================
+html_code = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel Forense i2 - Investigação de Vínculos LCFO</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
+        body {{ display: flex; height: 100vh; background-color: #0B0F19; color: #E2E8F0; overflow: hidden; }}
+        
+        /* Painel Lateral i2 Style */
+        .sidebar {{ width: 340px; background: #111827; border-right: 1px solid #1F2937; padding: 20px; display: flex; flex-direction: column; gap: 14px; z-index: 10; box-shadow: 4px 0 15px rgba(0,0,0,0.5); }}
+        .header h2 {{ font-size: 15px; color: #38BDF8; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }}
+        .header p {{ font-size: 11px; color: #94A3B8; margin-top: 4px; }}
+        
+        .box-section {{ background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }}
+        .box-section label {{ font-size: 11px; font-weight: 600; text-transform: uppercase; color: #94A3B8; }}
+        
+        select, input {{ width: 100%; background: #0F172A; border: 1px solid #334155; color: #F8FAFC; padding: 8px; border-radius: 4px; font-size: 12px; outline: none; }}
+        select:focus, input:focus {{ border-color: #38BDF8; }}
+        
+        .btn {{ background: #2563EB; border: none; color: white; padding: 9px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; }}
+        .btn:hover {{ background: #1D4ED8; }}
+        .btn-outline {{ background: transparent; border: 1px solid #475569; color: #CBD5E1; }}
+        .btn-outline:hover {{ background: #1E293B; color: white; }}
+        
+        .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+        .stat-card {{ background: #0F172A; padding: 8px; border-radius: 4px; border: 1px solid #1E293B; text-align: center; }}
+        .stat-card span {{ display: block; font-size: 10px; color: #64748B; text-transform: uppercase; }}
+        .stat-card b {{ font-size: 16px; color: #38BDF8; }}
+        
+        /* Área Central do Canvas */
+        .canvas-area {{ flex: 1; position: relative; background: radial-gradient(circle at 50% 50%, #151E32 0%, #080D1A 100%); }}
+        #network {{ width: 100%; height: 100%; }}
+        
+        /* Legenda Flutuante estilo i2 */
+        .floating-topbar {{ position: absolute; top: 16px; right: 16px; background: rgba(17, 24, 39, 0.95); border: 1px solid #374151; border-radius: 6px; padding: 8px 14px; display: flex; gap: 16px; font-size: 11px; z-index: 5; pointer-events: none; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; }}
+        .badge {{ width: 10px; height: 10px; border-radius: 2px; }}
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="header">
+            <h2>Investigação de Vínculos</h2>
+            <p>Consolidado Histórico de Restrições (i2 View)</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span>Total de Redes</span>
+                <b>{len(componentes)}</b>
+            </div>
+            <div class="stat-card">
+                <span>Entidades</span>
+                <b>{len(G.nodes)}</b>
+            </div>
+        </div>
+
+        <div class="box-section">
+            <label>Seletor de Rede / Quadrilha</label>
+            <select id="sel-cluster" onchange="filterCluster(this.value)">
+                <option value="ALL">🌐 Visualizar Todas as Redes</option>
+                {"".join([f'<option value="{c["cluster_id"]}">Célula #{c["cluster_id"]} ({c["tamanho"]} nós - Hub: {c["hub"]})</option>' for c in cluster_summary[:50]])}
+            </select>
+            <span style="font-size: 10px; color: #64748B;">Listando as 50 maiores células por concentração.</span>
+        </div>
+
+        <div class="box-section">
+            <label>Localizar Entidade</label>
+            <input type="text" id="txt-search" placeholder="Digite CPF, Telefone ou Placa..." onkeyup="searchNode(this.value)">
+        </div>
+
+        <div class="box-section" style="margin-top: auto; display: flex; flex-direction: column; gap: 8px;">
+            <button class="btn btn-outline" onclick="network.fit({{animation: {{duration: 400}}}})">🔍 Ajustar Enquadramento</button>
+            <button class="btn btn-outline" id="btn-physics" onclick="togglePhysics()">⏸️ Congelar Nós</button>
+            <button class="btn" onclick="exportHDImage()">📷 Exportar Evidência (PNG)</button>
+        </div>
+    </div>
+
+    <div class="canvas-area">
+        <div class="floating-topbar">
+            <div class="legend-item"><div class="badge" style="background:#B91C1C;"></div> <span>Telefone</span></div>
+            <div class="legend-item"><div class="badge" style="background:#0284C7;"></div> <span>CPF / CNPJ</span></div>
+            <div class="legend-item"><div class="badge" style="background:#7C3AED;"></div> <span>Placa</span></div>
+        </div>
+        <div id="network"></div>
+    </div>
+
+    <script>
+        const rawNodes = {json.dumps(vis_nodes)};
+        const rawEdges = {json.dumps(vis_edges)};
+        
+        const nodesDataSet = new vis.DataSet();
+        const edgesDataSet = new vis.DataSet();
+        
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        
+        let physicsEnabled = true;
+        
+        const options = {{
+            groups: {{
+                telefone: {{
+                    color: {{ background: "#B91C1C", border: "#EF4444", highlight: {{ background: "#EF4444", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }},
+                cpf: {{
+                    color: {{ background: "#0284C7", border: "#38BDF8", highlight: {{ background: "#38BDF8", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }},
+                placa: {{
+                    color: {{ background: "#7C3AED", border: "#A78BFA", highlight: {{ background: "#A78BFA", border: "#FFFFFF" }} }},
+                    shape: "box",
+                    font: {{ color: "#FFFFFF", bold: true, face: "Segoe UI", size: 12 }}
+                }}
+            }},
+            edges: {{
+                color: {{ color: "#475569", highlight: "#38BDF8" }},
+                width: 1.5,
+                smooth: {{ type: "continuous" }}
+            }},
+            physics: {{
+                forceAtlas2Based: {{
+                    gravitationalConstant: -90,
+                    centralGravity: 0.01,
+                    springLength: 180,
+                    springConstant: 0.08,
+                    damping: 0.88
+                }},
+                solver: 'forceAtlas2Based',
+                stabilization: {{ iterations: 150 }}
+            }},
+            interaction: {{
+                hover: true,
+                zoomView: true,
+                dragNodes: true
+            }}
+        }};
+        
+        const network = new vis.Network(container, data, options);
+
+        function filterCluster(cId) {{
+            if (cId === "ALL") {{
+                // Carrega até os 250 nós mais conectados para não travar a tela
+                nodesDataSet.clear();
+                edgesDataSet.clear();
+                nodesDataSet.add(rawNodes.slice(0, 300));
+                edgesDataSet.add(rawEdges.filter(e => nodesDataSet.get(e.from) && nodesDataSet.get(e.to)));
+            }} else {{
+                const numId = parseInt(cId);
+                const filteredNodes = rawNodes.filter(n => n.cluster === numId);
+                const filteredEdges = rawEdges.filter(e => e.cluster === numId);
+                
+                nodesDataSet.clear();
+                edgesDataSet.clear();
+                nodesDataSet.add(filteredNodes);
+                edgesDataSet.add(filteredEdges);
+            }}
+            setTimeout(() => network.fit({{animation: {{duration: 400}}}}), 150);
+        }}
+
+        function searchNode(text) {{
+            const val = text.trim().toLowerCase();
+            if (!val) return;
+            
+            const found = rawNodes.find(n => n.label.toLowerCase().includes(val) || n.title.toLowerCase().includes(val));
+            if (found) {{
+                // Se o nó estiver em outro cluster, muda o filtro para o cluster dele
+                const currentCluster = document.getElementById('sel-cluster').value;
+                if (currentCluster !== "ALL" && parseInt(currentCluster) !== found.cluster) {{
+                    document.getElementById('sel-cluster').value = found.cluster;
+                    filterCluster(found.cluster);
+                }}
+                setTimeout(() => {{
+                    network.focus(found.id, {{ scale: 1.4, animation: {{ duration: 500 }} }});
+                    network.selectNodes([found.id]);
+                }}, 200);
+            }}
+        }}
+
+        function togglePhysics() {{
+            physicsEnabled = !physicsEnabled;
+            network.setOptions({{ physics: {{ enabled: physicsEnabled }} }});
+            document.getElementById('btn-physics').innerText = physicsEnabled ? '⏸️ Congelar Nós' : '▶️ Ativar Física';
+        }}
+
+        function exportHDImage() {{
+            const canvas = container.querySelector('canvas');
+            const link = document.createElement('a');
+            link.download = 'investigacao_vinculos_i2.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }}
+
+        // Inicia mostrando o Cluster #1 (o maior esquema identificado)
+        filterCluster("1");
+        document.getElementById('sel-cluster').value = "1";
+    </script>
+</body>
+</html>
+"""
+
+caminho_saida = Path(__file__).parent / "painel_investigacao_i2.html"
+with open(caminho_saida, "w", encoding="utf-8") as f:
+    f.write(html_code)
+
+print(f"🚀 Sucesso! Arquivo '{caminho_saida.name}' gerado.")
+webbrowser.open(str(caminho_saida))
