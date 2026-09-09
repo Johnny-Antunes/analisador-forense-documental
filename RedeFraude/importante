@@ -1,0 +1,1025 @@
+O erro da imagem acontece durante a leitura dos CSVs, antes do cruzamento com o SQLite. Analisei o arquivo de referência ME_DATA_CRIACAO_V2_31122025: ele usa ;, possui 92 colunas e 15.332 registros, e todas as linhas desse arquivo têm exatamente 92 campos. Portanto, o arquivo de referência está estruturalmente consistente.
+
+Diagnóstico principal
+
+A mensagem:
+
+Plain Text
+1
+Error tokenizing data. C error: Expected 8 fields in line 7, saw 9
+Mostrar mais linhas
+
+significa que o Pandas interpretou determinada linha como tendo 8 colunas, mas encontrou 9 na linha seguinte.
+
+No seu código, o ponto mais vulnerável está aqui:
+
+Python
+1
+pd.read_csv(
+2
+arq,
+3
+sep=None,
+4
+engine="python",
+5
+encoding=enc,
+6
+on_bad_lines="skip"
+7
+)
+Mostrar mais linhas
+
+O sep=None pede ao Pandas para adivinhar o delimitador. Isso funciona em alguns arquivos, mas pode falhar quando:
+
+o CSV tem várias vírgulas dentro de descrições ou endereços;
+o arquivo diário tem poucas linhas;
+existem aspas abertas ou fechadas incorretamente;
+existe quebra de linha dentro de um campo textual;
+algum CSV foi exportado com delimitador diferente;
+o cabeçalho está diferente das linhas;
+o arquivo começa com linhas vazias ou metadados.
+
+Nos arquivos demonstrados na imagem, o leitor aparentemente está detectando um separador incorreto. Os números variam entre 7, 8, 9 e 10 campos, o que é um forte sinal de autodetecção inadequada ou arquivo com estrutura diferente do CSV de referência.
+
+Correção recomendada
+1. Substitua completamente ler_arquivo_seguro
+
+Adicione estes imports no começo de database.py:
+
+Python
+1
+import csv
+2
+import io
+Mostrar mais linhas
+
+Depois substitua sua função ler_arquivo_seguro por esta versão:
+
+Python
+1
+def detectar_encoding_e_separador(arq):
+2
+"""
+3
+Detecta o encoding e o separador usando o cabeçalho do arquivo.
+4
+Dá preferência ao ponto e vírgula, que é o padrão das bases.
+5
+"""
+6
+encodings = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
+7
+separadores = [";", "\t", "|", ","]
+8
+ 
+9
+ultimo_erro = None
+10
+ 
+11
+for encoding in encodings:
+12
+try:
+13
+with open(arq, "r", encoding=encoding, errors="strict") as f:
+14
+amostra = f.read(200_000)
+15
+ 
+16
+linhas = [
+17
+linha for linha in amostra.splitlines()
+18
+if linha.strip()
+19
+]
+20
+ 
+21
+if not linhas:
+22
+raise ValueError("Arquivo vazio ou sem linhas válidas.")
+23
+ 
+24
+cabecalho = linhas[0]
+25
+ 
+26
+contagens = {
+27
+separador: cabecalho.count(separador)
+28
+for separador in separadores
+29
+}
+30
+ 
+31
+separador = max(contagens, key=contagens.get)
+32
+ 
+33
+if contagens[separador] == 0:
+34
+try:
+35
+dialeto = csv.Sniffer().sniff(
+36
+amostra,
+37
+delimiters=";\t|,"
+38
+)
+39
+separador = dialeto.delimiter
+40
+except csv.Error:
+41
+separador = ";"
+42
+ 
+43
+return encoding, separador
+44
+ 
+45
+except UnicodeDecodeError as e:
+46
+ultimo_erro = e
+47
+continue
+48
+ 
+49
+raise ValueError(
+50
+f"Não foi possível identificar o encoding do arquivo. "
+51
+f"Último erro: {ultimo_erro}"
+52
+)
+53
+ 
+54
+ 
+55
+def validar_estrutura_csv(arq, encoding, separador):
+56
+"""
+57
+Analisa o CSV com o módulo csv, que respeita campos entre aspas.
+58
+Retorna a quantidade esperada de colunas e as linhas problemáticas.
+59
+"""
+60
+linhas_invalidas = []
+61
+ 
+62
+with open(
+63
+arq,
+64
+"r",
+65
+encoding=encoding,
+66
+errors="replace",
+67
+newline=""
+68
+) as arquivo:
+69
+leitor = csv.reader(
+70
+arquivo,
+71
+delimiter=separador,
+72
+quotechar='"'
+73
+)
+74
+ 
+75
+try:
+76
+cabecalho = next(leitor)
+77
+except StopIteration:
+78
+raise ValueError("Arquivo CSV vazio.")
+79
+ 
+80
+quantidade_colunas = len(cabecalho)
+81
+ 
+82
+for numero_linha, campos in enumerate(leitor, start=2):
+83
+if len(campos) != quantidade_colunas:
+84
+linhas_invalidas.append({
+85
+"linha": numero_linha,
+86
+"esperado": quantidade_colunas,
+87
+"encontrado": len(campos)
+88
+})
+89
+ 
+90
+if len(linhas_invalidas) >= 100:
+91
+break
+92
+ 
+93
+return quantidade_colunas, linhas_invalidas
+94
+ 
+95
+ 
+96
+def ler_arquivo_seguro(arq):
+97
+"""
+98
+Lê XLSX e CSV de forma controlada.
+99
+ 
+100
+Para CSV:
+101
+1. Detecta encoding.
+102
+2. Detecta o separador pelo cabeçalho.
+103
+3. Valida a quantidade de colunas.
+104
+4. Tenta primeiro o engine C.
+105
+5. Usa engine Python como contingência.
+106
+"""
+107
+ext = arq.suffix.lower()
+108
+ 
+109
+if ext == ".xlsx":
+110
+return pd.read_excel(
+111
+arq,
+112
+dtype=str,
+113
+engine="openpyxl"
+114
+)
+115
+ 
+116
+if ext != ".csv":
+117
+raise ValueError(
+118
+f"Formato de arquivo não suportado: {ext}"
+119
+)
+120
+ 
+121
+encoding, separador = detectar_encoding_e_separador(arq)
+122
+ 
+123
+quantidade_colunas, linhas_invalidas = validar_estrutura_csv(
+124
+arq,
+125
+encoding,
+126
+separador
+127
+)
+128
+ 
+129
+if linhas_invalidas:
+130
+detalhes = ", ".join(
+131
+f"linha {item['linha']}: "
+132
+f"{item['encontrado']} campos, "
+133
+f"esperados {item['esperado']}"
+134
+for item in linhas_invalidas[:10]
+135
+)
+136
+ 
+137
+raise ValueError(
+138
+f"CSV inconsistente. Separador detectado: "
+139
+f"{repr(separador)}. "
+140
+f"Quantidade esperada de colunas: {quantidade_colunas}. "
+141
+f"Linhas problemáticas: {detalhes}"
+142
+)
+143
+ 
+144
+parametros = {
+145
+"filepath_or_buffer": arq,
+146
+"sep": separador,
+147
+"encoding": encoding,
+148
+"dtype": str,
+149
+"keep_default_na": False,
+150
+"na_filter": False,
+151
+"quotechar": '"',
+152
+"on_bad_lines": "error",
+153
+"low_memory": False
+154
+}
+155
+ 
+156
+try:
+157
+return pd.read_csv(
+158
+engine="c",
+159
+**parametros
+160
+)
+161
+except Exception:
+162
+parametros.pop("low_memory", None)
+163
+ 
+164
+return pd.read_csv(
+165
+engine="python",
+166
+**parametros
+167
+)
+Mostrar mais linhas
+Por que essa versão resolve
+
+Ela deixa de depender exclusivamente de:
+
+Python
+1
+sep=None
+Mostrar mais linhas
+
+e passa a:
+
+verificar o cabeçalho;
+escolher explicitamente ;, ,, tabulação ou |;
+validar todas as linhas antes de processar;
+informar exatamente qual linha está quebrada;
+respeitar campos entre aspas;
+tratar corretamente arquivos com BOM por meio de utf-8-sig;
+ler CPF, telefone, placa e assistência como texto.
+
+O dtype=str também é importante porque evita:
+
+CPF perder zero à esquerda;
+placa ser interpretada como outro tipo;
+telefone aparecer em notação científica;
+identificadores extensos sofrerem conversão numérica;
+números de assistência terminarem com .0.
+Não use on_bad_lines="skip" silenciosamente
+
+Atualmente seu código pula linhas quebradas:
+
+Python
+1
+on_bad_lines="skip"
+Mostrar mais linhas
+
+Para uma investigação de fraude, isso é perigoso. Uma linha descartada pode ser justamente a linha que contém um telefone, CPF ou placa inédita.
+
+Melhor comportamento:
+
+Python
+1
+on_bad_lines="error"
+Mostrar mais linhas
+
+Assim, o arquivo problemático fica identificado e não ocorre ingestão parcial silenciosa.
+
+Se for necessário continuar processando os outros arquivos, o seu try/except externo já faz isso:
+
+Python
+1
+except Exception as e:
+2
+st.error(f"Erro ao processar {arq.name}: {e}")
+Mostrar mais linhas
+Outros erros importantes no código
+
+Além do CSV, encontrei outros pontos que precisam ser corrigidos.
+
+2. Falta importar re em appv3.py
+
+Você utiliza:
+
+Python
+1
+termo_clean = re.sub(
+2
+r'[^a-zA-Z0-9]',
+3
+'',
+4
+termo_busca
+5
+).upper()
+6
+``
+Mostrar mais linhas
+
+mas não importou re.
+
+Adicione no início:
+
+Python
+1
+import re
+2
+``
+Mostrar mais linhas
+
+Sem isso, ao pesquisar CPF, placa ou telefone, ocorrerá:
+
+Plain Text
+1
+NameError: name 're' is not defined
+Mostrar mais linhas
+3. Existe um erro de sintaxe no ValueError
+
+Você enviou:
+
+Python
+1
+raise ValueError(Formato de arquivo não suportado: {ext})
+2
+`
+Mostrar mais linhas
+
+O correto é:
+
+Python
+1
+raise ValueError(
+2
+f"Formato de arquivo não suportado: {ext}"
+3
+)
+Mostrar mais linhas
+
+Se o código no arquivo estiver exatamente como foi enviado, o módulo nem deveria inicializar. Pode ser que tenha ocorrido apenas uma perda das aspas ao copiar para a conversa, mas vale conferir.
+
+4. errors="ignore" não pertence a pd.read_csv
+
+Você tem este fallback:
+
+Python
+1
+return pd.read_csv(
+2
+arq,
+3
+sep=';',
+4
+encoding='latin1',
+5
+on_bad_lines='skip',
+6
+errors='ignore'
+7
+)
+Mostrar mais linhas
+
+O argumento errors não é válido para pandas.read_csv.
+
+Se quiser controlar erros de codificação, seria:
+
+Python
+1
+encoding_errors="replace"
+Mostrar mais linhas
+
+Exemplo:
+
+Python
+1
+pd.read_csv(
+2
+arq,
+3
+sep=";",
+4
+encoding="latin1",
+5
+encoding_errors="replace",
+6
+on_bad_lines="error"
+7
+)
+Mostrar mais linhas
+
+Na solução proposta, a leitura já trabalha com encodings conhecidos e não precisa desse fallback.
+
+Problema crítico no modelo do banco
+
+Este ponto não causa o erro da imagem, mas afeta diretamente a qualidade do cruzamento.
+
+A tabela possui:
+
+SQL
+1
+id_assistencia TEXT UNIQUE
+Mostrar mais linhas
+
+Porém, o arquivo de referência contém mais de uma linha para o mesmo número de assistência, por exemplo quando uma assistência possui diferentes movimentos, serviços, pagamentos, pedágios, retornos ou refaturamentos. Isso aparece claramente na estrutura do arquivo fornecido.
+
+Como você usa:
+
+SQL
+1
+INSERT OR IGNORE
+Mostrar mais linhas
+
+somente a primeira linha de cada id_assistencia será inserida. As demais serão descartadas silenciosamente.
+
+Isso pode provocar perda de:
+
+serviço adicional;
+telefone alterado;
+nova placa;
+localização diferente;
+movimento econômico;
+atualização posterior da assistência.
+Solução mínima
+
+Criar uma chave composta com o conteúdo relevante:
+
+SQL
+1
+UNIQUE (
+2
+arquivo,
+3
+id_assistencia,
+4
+cpf,
+5
+telefone,
+6
+placa,
+7
+servico
+8
+)
+Mostrar mais linhas
+
+Então altere a criação da tabela para:
+
+Python
+1
+cursor.execute("""
+2
+CREATE TABLE criacoes_diarias (
+3
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+4
+arquivo TEXT,
+5
+id_assistencia TEXT,
+6
+data TEXT,
+7
+titular TEXT,
+8
+cpf TEXT,
+9
+telefone TEXT,
+10
+placa TEXT,
+11
+servico TEXT,
+12
+bairro TEXT,
+13
+cidade TEXT,
+14
+uf TEXT,
+15
+latitude REAL,
+16
+longitude REAL,
+17
+UNIQUE (
+18
+arquivo,
+19
+id_assistencia,
+20
+cpf,
+21
+telefone,
+22
+placa,
+23
+servico
+24
+)
+25
+)
+26
+""")
+Mostrar mais linhas
+
+O mesmo raciocínio vale para a tabela assistencias.
+
+Solução ideal
+
+A base apresenta o campo Numero do Movimento Economico. O melhor seria armazenar esse campo e usar algo como:
+
+SQL
+1
+UNIQUE (
+2
+id_assistencia,
+3
+numero_movimento
+4
+)
+Mostrar mais linhas
+
+Isso representa com mais fidelidade a granularidade do arquivo.
+
+Seu contador de inseridos está incorreto
+
+Hoje você faz:
+
+Python
+1
+cursor.executemany(..., lote)
+2
+total_inseridos += len(lote)
+Mostrar mais linhas
+
+Mas INSERT OR IGNORE pode ignorar vários registros. Mesmo assim, todos são contabilizados como inseridos.
+
+Substitua por:
+
+Python
+1
+antes = conn.total_changes
+2
+ 
+3
+cursor.executemany("""
+4
+INSERT OR IGNORE INTO criacoes_diarias (
+5
+arquivo,
+6
+id_assistencia,
+7
+data,
+8
+titular,
+9
+cpf,
+10
+telefone,
+11
+placa,
+12
+servico,
+13
+bairro,
+14
+cidade,
+15
+uf,
+16
+latitude,
+17
+longitude
+18
+)
+19
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+20
+""", lote)
+21
+ 
+22
+inseridos_reais = conn.total_changes - antes
+23
+total_inseridos += inseridos_reais
+Mostrar mais linhas
+
+Assim o painel mostrará a quantidade efetivamente gravada.
+
+Faça rollback quando um arquivo falhar
+
+Atualmente, se alguma exceção acontecer depois de parte de um processamento, a conexão continua aberta para o próximo arquivo. É melhor isolar transações por arquivo:
+
+Python
+1
+for idx_arq, arq in enumerate(arquivos):
+2
+try:
+3
+df = ler_arquivo_seguro(arq)
+4
+ 
+5
+# Mapeamento e montagem do lote...
+6
+ 
+7
+if lote:
+8
+antes = conn.total_changes
+9
+ 
+10
+cursor.executemany("""
+11
+INSERT OR IGNORE INTO criacoes_diarias (
+12
+arquivo,
+13
+id_assistencia,
+14
+data,
+15
+titular,
+16
+cpf,
+17
+telefone,
+18
+placa,
+19
+servico,
+20
+bairro,
+21
+cidade,
+22
+uf,
+23
+latitude,
+24
+longitude
+25
+)
+26
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+27
+""", lote)
+28
+ 
+29
+total_inseridos += conn.total_changes - antes
+30
+ 
+31
+conn.commit()
+32
+ 
+33
+except Exception as e:
+34
+conn.rollback()
+35
+st.error(
+36
+f"Erro ao processar {arq.name}: {type(e).__name__}: {e}"
+37
+)
+Mostrar mais linhas
+Ajuste na normalização de datas
+
+A base possui datas como:
+
+Plain Text
+1
+0025-12-30 00:00:00
+Mostrar mais linhas
+
+Sua correção atual:
+
+Python
+1
+if re.match(r"^00\d{2}", v):
+2
+v = "20" + v[2:]
+Mostrar mais linhas
+
+transforma corretamente 0025-12-30 em 2025-12-30. Ainda assim, é melhor limitar a regra para anos de quatro dígitos iniciados em 00:
+
+Python
+1
+if re.match(r"^00\d{2}-\d{2}-\d{2}", v):
+2
+v = "20" + v[2:]
+Mostrar mais linhas
+
+E informar dayfirst=True, já que também existem datas brasileiras:
+
+Python
+1
+dt = pd.to_datetime(
+2
+v,
+3
+errors="coerce",
+4
+dayfirst=True
+5
+)
+Mostrar mais linhas
+
+Função revisada:
+
+Python
+1
+def tratar_data_flexivel(val, nome_arquivo):
+2
+if pd.isna(val):
+3
+return extrair_data_arquivo(nome_arquivo)
+4
+ 
+5
+v = str(val).strip()
+6
+ 
+7
+if not v or v.lower() in [
+8
+"nan", "nat", "none", "null", "-"
+9
+]:
+10
+return extrair_data_arquivo(nome_arquivo)
+11
+ 
+12
+if re.match(r"^00\d{2}-\d{2}-\d{2}", v):
+13
+v = "20" + v[2:]
+14
+ 
+15
+dt = pd.to_datetime(
+16
+v,
+17
+errors="coerce",
+18
+dayfirst=True
+19
+)
+20
+ 
+21
+if pd.notna(dt):
+22
+return dt.strftime("%Y-%m-%d")
+23
+ 
+24
+return extrair_data_arquivo(nome_arquivo)
+Mostrar mais linhas
+Um risco analítico no cruzamento
+
+Sua função cruzar_com_criacoes_diarias faz apenas uma expansão de primeiro nível:
+
+pega CPF, telefone e placa da célula da blacklist;
+encontra assistências diárias associadas;
+identifica novos CPFs, telefones e placas;
+encerra o processo.
+
+Mas um novo telefone pode aparecer em outra assistência com uma terceira placa. Essa terceira placa não será encontrada porque o telefone novo não participa de uma segunda consulta.
+
+Para investigação de rede, o ideal é uma expansão iterativa com limite de profundidade:
+
+nível 0: entidades da blacklist;
+nível 1: entidades ligadas diretamente;
+nível 2: entidades ligadas às recém-descobertas;
+nível 3: opcional, com mais cautela.
+
+Também é importante guardar em qual nível a entidade foi descoberta e qual assistência criou o elo.
+
+Algo conceitualmente assim:
+
+Python
+1
+conhecidos_cpfs = set(cpfs_iniciais)
+2
+conhecidos_tels = set(tels_iniciais)
+3
+conhecidos_placas = set(placas_iniciais)
+4
+ 
+5
+for profundidade in range(1, 4):
+6
+df_matches = consultar_entidades(
+7
+conhecidos_cpfs,
+8
+conhecidos_tels,
+9
+conhecidos_placas
+10
+)
+11
+ 
+12
+novos_cpfs = set(df_matches["cpf"]) - conhecidos_cpfs
+13
+novos_tels = set(df_matches["telefone"]) - conhecidos_tels
+14
+novas_placas = set(df_matches["placa"]) - conhecidos_placas
+15
+ 
+16
+if not novos_cpfs and not novos_tels and not novas_placas:
+17
+break
+18
+ 
+19
+conhecidos_cpfs.update(novos_cpfs)
+20
+conhecidos_tels.update(novos_tels)
+21
+conhecidos_placas.update(novas_placas)
+Mostrar mais linhas
+
+Para evitar explosão de falsos positivos, eu limitaria inicialmente a profundidade a 2.
+
+Ordem recomendada para correção
+Trocar ler_arquivo_seguro.
+Importar re em appv3.py.
+Corrigir o ValueError.
+Remover errors="ignore".
+Alterar a restrição UNIQUE da tabela.
+Corrigir a contagem de registros realmente inseridos.
+Aplicar rollback por arquivo.
+Apagar e reconstruir criacoes_diarias.
+Rodar novamente a ingestão.
+Conferir se a quantidade inserida está coerente com os arquivos.
+
+Para reconstruir somente a base diária, sua função já executa:
+
+SQL
+1
+DROP TABLE IF EXISTS criacoes_diarias
+Mostrar mais linhas
+
+Então basta reiniciar o aplicativo após alterar o código e clicar novamente em Ingerir Criações no SQLite.
+
+Conclusão
+
+O arquivo de referência não é o causador do erro. O problema mais provável está na autodetecção do separador dos demais arquivos diários. A correção central é abandonar sep=None, detectar o separador pelo cabeçalho e validar a estrutura antes da leitura. Depois disso, o principal problema funcional passa a ser o id_assistencia UNIQUE, que atualmente descarta movimentos adicionais e pode esconder vínculos relevantes para a investigação.
