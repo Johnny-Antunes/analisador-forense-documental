@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 import pydeck as pdk
 
 # =====================================================
-# 1. CONFIGURAÇÃO DE PÁGINA & CSS POLIDO
+# 1. CONFIGURAÇÃO DE PÁGINA & CSS LIMPO
 # =====================================================
 st.set_page_config(
     page_title="Mesa de Inteligência de Fraudes - LCFO",
@@ -18,25 +18,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Mantemos apenas o espaçamento e o HUD, sem interferir no cabeçalho nativo
 st.markdown("""
 <style>
-    .stDeployButton, [data-testid="stToolbarActions"], [data-testid="stToolbar"], #MainMenu, footer {
-        display: none !important;
-        visibility: hidden !important;
-    }
-    [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {
-        display: flex !important;
-        visibility: visible !important;
-        pointer-events: auto !important;
-        z-index: 999999 !important;
-    }
+    /* Espaçamento superior que respeita o cabeçalho nativo do Streamlit */
     .block-container {
-        padding-top: 2.5rem !important;
+        padding-top: 3.2rem !important;
         padding-bottom: 0.5rem !important;
         padding-left: 1.5rem !important;
         padding-right: 1.5rem !important;
         max-width: 100% !important;
     }
+    
+    /* HUD de Inteligência */
     .hud-bar {
         background: #0B111E;
         border: 1px solid #1E293B;
@@ -673,7 +667,7 @@ with st.sidebar:
 G, cluster_info = carregar_redes()
 
 if not G or not cluster_info:
-    st.info("👈 Nenhum dado processado no banco. Abra a barra lateral à esquerda (na setinha >) e clique em **'🔄 Ingerir Planilhas no SQLite'**.")
+    st.info("👈 Nenhum dado processado no banco. Abra a barra lateral à esquerda e clique em **'🔄 Ingerir Planilhas no SQLite'**.")
     st.stop()
 
 # =====================================================
