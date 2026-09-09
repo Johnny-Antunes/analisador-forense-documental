@@ -1,0 +1,946 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+import networkx as nx
+import json
+import re
+from pathlib import Path
+import streamlit.components.v1 as components
+import pydeck as pdk
+
+# =====================================================
+# 1. CONFIGURAÇÃO DE PÁGINA & CSS POLIDO
+# =====================================================
+st.set_page_config(
+    page_title="Mesa de Inteligência de Fraudes - LCFO",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    /* Espaçamento superior seguro para manter o título e HUD desimpedidos */
+    .block-container {
+        padding-top: 2.8rem !important;
+        padding-bottom: 0.5rem !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+        max-width: 100% !important;
+    }
+    
+    /* HUD de Inteligência */
+    .hud-bar {
+        background: #0B111E;
+        border: 1px solid #1E293B;
+        border-radius: 8px;
+        padding: 8px 14px;
+        margin-top: 4px;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+DB_PATH = Path(__file__).parent / "banco_fraudes.db"
+PASTA_CASOS = Path(__file__).parent / "casos_duplicidade"
+PASTA_CASOS.mkdir(exist_ok=True)
+
+# =====================================================
+# 2. TRATAMENTO FORENSE DE DADOS
+# =====================================================
+def normalizar_valor_bruto(val):
+    if pd.isna(val): return ""
+    if isinstance(val, (float, int)): return f"{int(val)}"
+    v = str(val).strip()
+    if v.lower() in ["nan", "none", "null", "-", "nat", ""]: return ""
+    if re.search(r"[eE][+-]?\d+", v):
+        try: return f"{int(float(v.replace(',', '.')))}"
+        except Exception: pass
+    if re.match(r"^\d+\.0+$", v): return v.split(".")[0]
+    return v
+
+def limpar_placa(val):
+    if pd.isna(val): return ""
+    v = str(val).strip().upper()
+    placa = re.sub(r"[^A-Z0-9]", "", v)
+    return placa if len(placa) == 7 else ""
+
+def limpar_cpf_cnpj(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    if not nums or nums.endswith("0000000"): return ""
+    if len(nums) <= 11:
+        nums = nums.zfill(11)
+        return "" if len(set(nums)) == 1 else nums
+    elif len(nums) <= 14:
+        return nums.zfill(14)
+    return nums
+
+def formatar_cpf_cnpj(digits):
+    if len(digits) == 11: return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+    elif len(digits) == 14: return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    return digits
+
+def limpar_tel(val):
+    v = normalizar_valor_bruto(val)
+    nums = re.sub(r"\D", "", v)
+    if not nums or nums.endswith("000000"): return ""
+    if len(nums) in [12, 13] and nums.startswith("55"): nums = nums[2:]
+    if len(nums) in [11, 12] and nums.startswith("0"): nums = nums[1:]
+    return nums if len(nums) in [10, 11] else ""
+
+def formatar_tel(digits):
+    if len(digits) == 11: return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    elif len(digits) == 10: return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    return digits
+
+def encontrar_col(df, nomes):
+    colunas_df = {re.sub(r'[^a-z0-9]', '', str(c).strip().lower()): c for c in df.columns}
+    for n in nomes:
+        n_clean = re.sub(r'[^a-z0-9]', '', n.lower())
+        if n_clean in colunas_df: return colunas_df[n_clean]
+    for c_clean, c_orig in colunas_df.items():
+        if any(re.sub(r'[^a-z0-9]', '', n.lower()) in c_clean for n in nomes): return c_orig
+    return None
+
+# =====================================================
+# 3. INGESTÃO SQLITE
+# =====================================================
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def carregar_arquivos_para_sqlite():
+    arquivos = list(PASTA_CASOS.glob("*.xlsx"))
+    if not arquivos: return 0, 0
+
+    lista_dfs = []
+    for arq in arquivos:
+        try:
+            tdf = pd.read_excel(arq)
+            tdf["_ARQUIVO_ORIGEM"] = arq.name
+            lista_dfs.append(tdf)
+        except Exception as e:
+            st.error(f"Erro ao ler {arq.name}: {e}")
+
+    df_bruto = pd.concat(lista_dfs, ignore_index=True)
+    
+    col_cpf = encontrar_col(df_bruto, ["cpf_cnpj_usuario", "cpf_cnpj", "cpf", "cnpj", "documento"])
+    col_tel = encontrar_col(df_bruto, ["telefone_titular", "telefone", "celular", "tel", "contato"])
+    col_placa = encontrar_col(df_bruto, ["placa", "veiculo", "veículo", "auto"])
+    col_nome = encontrar_col(df_bruto, ["titular", "nome_cliente", "nome", "segurado", "cliente"])
+    col_data = encontrar_col(df_bruto, ["data", "abertura", "criacao", "dt"])
+    col_id = encontrar_col(df_bruto, ["assistencia", "assistência", "protocolo", "sinistro", "id"])
+    col_cid = encontrar_col(df_bruto, ["cidade", "municipio"])
+    col_uf = encontrar_col(df_bruto, ["uf", "estado"])
+    col_lat = encontrar_col(df_bruto, ["lat", "latitude"])
+    col_lon = encontrar_col(df_bruto, ["lon", "longitude", "lng"])
+
+    registros = []
+    for _, r in df_bruto.iterrows():
+        cpf = limpar_cpf_cnpj(r[col_cpf]) if col_cpf else ""
+        tel = limpar_tel(r[col_tel]) if col_tel else ""
+        placa = limpar_placa(r[col_placa]) if col_placa else ""
+        nome = str(r[col_nome]).strip() if col_nome and pd.notna(r[col_nome]) else ""
+        dt = str(r[col_data]).strip() if col_data and pd.notna(r[col_data]) else ""
+        ida = str(r[col_id]).strip() if col_id and pd.notna(r[col_id]) else ""
+        cid = str(r[col_cid]).strip() if col_cid and pd.notna(r[col_cid]) else "São Paulo"
+        uf = str(r[col_uf]).strip() if col_uf and pd.notna(r[col_uf]) else "SP"
+        
+        try:
+            lat = float(r[col_lat]) if col_lat and pd.notna(r[col_lat]) else -23.5505
+            lon = float(r[col_lon]) if col_lon and pd.notna(r[col_lon]) else -46.6333
+        except Exception:
+            lat, lon = -23.5505, -46.6333
+
+        if cpf or tel or placa:
+            registros.append((r["_ARQUIVO_ORIGEM"], ida, dt, nome, cpf, tel, placa, cid, uf, lat, lon))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS assistencias")
+    cursor.execute("""
+        CREATE TABLE assistencias (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            arquivo TEXT,
+            id_assistencia TEXT,
+            data TEXT,
+            titular TEXT,
+            cpf TEXT,
+            telefone TEXT,
+            placa TEXT,
+            cidade TEXT,
+            uf TEXT,
+            latitude REAL,
+            longitude REAL
+        )
+    """)
+    cursor.execute("CREATE INDEX idx_cpf ON assistencias(cpf)")
+    cursor.execute("CREATE INDEX idx_tel ON assistencias(telefone)")
+    cursor.execute("CREATE INDEX idx_placa ON assistencias(placa)")
+
+    cursor.executemany("""
+        INSERT INTO assistencias (arquivo, id_assistencia, data, titular, cpf, telefone, placa, cidade, uf, latitude, longitude)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, registros)
+    conn.commit()
+    conn.close()
+
+    return len(arquivos), len(registros)
+
+# =====================================================
+# 4. PROCESSAMENTO DE REDES (COM PESOS)
+# =====================================================
+@st.cache_data
+def carregar_redes():
+    if not DB_PATH.exists(): return None, []
+
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT cpf, telefone, placa, titular FROM assistencias", conn)
+    conn.close()
+
+    if df.empty: return None, []
+
+    G = nx.Graph()
+
+    for _, row in df.iterrows():
+        cpf, tel, placa, nome = row["cpf"], row["telefone"], row["placa"], row["titular"]
+        entidades = []
+        if cpf:
+            nid = f"CPF_{cpf}"
+            G.add_node(nid, tipo="cpf", label=f"👤 {nome or formatar_cpf_cnpj(cpf)}", valor=formatar_cpf_cnpj(cpf))
+            entidades.append(nid)
+        if tel:
+            nid = f"TEL_{tel}"
+            G.add_node(nid, tipo="telefone", label=f"🚨 {formatar_tel(tel)}", valor=formatar_tel(tel))
+            entidades.append(nid)
+        if placa:
+            nid = f"PLACA_{placa}"
+            fmt_p = f"{placa[:3]}-{placa[3:]}" if len(placa) == 7 else placa
+            G.add_node(nid, tipo="placa", label=f"🚗 {fmt_p}", valor=fmt_p)
+            entidades.append(nid)
+
+        for i in range(len(entidades)):
+            for j in range(i + 1, len(entidades)):
+                u, v = entidades[i], entidades[j]
+                if G.has_edge(u, v):
+                    G[u][v]["weight"] += 1
+                else:
+                    G.add_edge(u, v, weight=1)
+
+    G.remove_nodes_from(list(nx.isolates(G)))
+    componentes = [c for c in nx.connected_components(G) if len(c) >= 3]
+    componentes.sort(key=len, reverse=True)
+
+    cluster_info = []
+    for c_id, comp in enumerate(componentes, 1):
+        sub = G.subgraph(comp)
+        graus = dict(sub.degree())
+        maior_hub = max(graus, key=graus.get)
+        cluster_info.append({
+            "id": c_id,
+            "tamanho": len(comp),
+            "hub_label": G.nodes[maior_hub]["label"],
+            "hub_id": maior_hub,
+            "nodes": list(comp)
+        })
+
+    return G, cluster_info
+
+# =====================================================
+# 5. GERADOR DO HTML FORENSE VIS.JS
+# =====================================================
+def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="", target_node_id=""):
+    hub_id_safe = json.dumps(hub_id)
+    target_node_id_safe = json.dumps(target_node_id)
+    
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }}
+        body {{ background: #06090F; overflow: hidden; height: 100vh; }}
+        #network {{ width: 100%; height: 100%; }}
+        
+        .floating-controls {{
+            position: absolute; top: 10px; left: 10px; z-index: 10;
+            display: flex; align-items: center; gap: 6px; background: rgba(11, 17, 30, 0.90);
+            border: 1px solid #1E293B; border-radius: 6px; padding: 4px 8px;
+            backdrop-filter: blur(8px);
+        }}
+        .floating-controls select, .floating-controls button {{
+            background: #1E293B; border: 1px solid #334155; color: #F8FAFC;
+            padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer;
+            font-weight: 600; transition: 0.15s; outline: none;
+        }}
+        .floating-controls select:focus, .floating-controls button:hover {{
+            background: #0284C7; border-color: #38BDF8;
+        }}
+        .chk-adaptive {{
+            display: flex; align-items: center; gap: 4px; font-size: 11px;
+            color: #94A3B8; font-weight: 600; cursor: pointer; margin-left: 2px;
+        }}
+        .chk-adaptive input {{ accent-color: #38BDF8; cursor: pointer; }}
+        
+        .legend {{
+            position: absolute; top: 10px; right: 10px; z-index: 10;
+            display: flex; gap: 8px; background: rgba(11, 17, 30, 0.90);
+            border: 1px solid #1E293B; border-radius: 6px; padding: 4px 10px;
+            font-size: 11px; color: #E2E8F0; font-weight: 600; pointer-events: none;
+            backdrop-filter: blur(8px);
+        }}
+        .legend span {{ display: flex; align-items: center; gap: 5px; }}
+        .badge {{ width: 8px; height: 8px; border-radius: 2px; }}
+    </style>
+</head>
+<body>
+    <div class="floating-controls">
+        <select id="sel-layout" onchange="changeLayout(this.value)">
+            <option value="organico">🌀 Teia Fluida Orgânica</option>
+            <option value="constelacao">✨ Constelação (Órbitas Estáticas)</option>
+            <option value="celulas">🧠 Células (Ilhas por Categoria)</option>
+            <option value="radial">⭐ Radial Estrela (i2 Peacock)</option>
+            <option value="arvore">🌲 Árvore Forense (Hub-Spoke)</option>
+            <option value="circular">⭕ Circular 360°</option>
+        </select>
+        <label class="chk-adaptive">
+            <input type="checkbox" id="chk-adaptive" checked onchange="toggleAdaptive()"> Texto Auto
+        </label>
+        <button onclick="fitView()">🎯 Enquadrar</button>
+        <button id="btn-freeze" onclick="toggleFreeze()">⏸️ Congelar</button>
+        <button onclick="copyToClipboard()">📋 Copiar</button>
+        <button onclick="exportPNG()">📷 PNG</button>
+    </div>
+    <div class="legend">
+        <span><div class="badge" style="background:#B91C1C;"></div> Telefone</span>
+        <span><div class="badge" style="background:#0284C7;"></div> Titular</span>
+        <span><div class="badge" style="background:#7C3AED;"></div> Placa</span>
+    </div>
+    <div id="network"></div>
+    <script>
+        const rawNodes = {vis_nodes_json};
+        const rawEdges = {vis_edges_json};
+        const masterHubId = {hub_id_safe};
+        const targetSearchId = {target_node_id_safe};
+        
+        const nodesDataSet = new vis.DataSet(rawNodes);
+        const edgesDataSet = new vis.DataSet(rawEdges);
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        
+        let isFrozen = false;
+        let baseFontSize = {base_font_size};
+        let isAdaptive = true;
+        let zoomTimeout = null;
+        let currentHighlightId = targetSearchId || null;
+
+        const options = {{
+            physics: {{
+                enabled: true,
+                solver: 'barnesHut',
+                barnesHut: {{
+                    gravitationalConstant: -4200,
+                    centralGravity: 0.18,
+                    springLength: 130,
+                    springConstant: 0.05,
+                    damping: 0.88,
+                    avoidOverlap: 0.35
+                }},
+                stabilization: {{ iterations: 120, updateInterval: 25 }}
+            }},
+            interaction: {{ hover: true, zoomView: true, dragNodes: true }}
+        }};
+
+        const network = new vis.Network(container, data, options);
+
+        function fitView() {{
+            network.fit({{
+                animation: {{ duration: 350 }},
+                padding: 40
+            }});
+        }}
+
+        // Função de Destaque Unificada (Busca e Clique)
+        function applyHighlight(selectedId) {{
+            currentHighlightId = selectedId;
+            if (selectedId && nodesDataSet.get(selectedId)) {{
+                const connected = network.getConnectedNodes(selectedId);
+                connected.push(selectedId);
+                
+                nodesDataSet.forEach(node => {{
+                    const orig = rawNodes.find(n => n.id === node.id);
+                    const isSelected = (node.id === selectedId);
+                    nodesDataSet.update({{
+                        id: node.id,
+                        opacity: connected.includes(node.id) ? 1.0 : 0.15,
+                        color: isSelected ? {{
+                            background: orig.color.background,
+                            border: '#FBBF24',
+                            highlight: {{ background: orig.color.background, border: '#FBBF24' }}
+                        }} : orig.color,
+                        borderWidth: isSelected ? 3 : 1
+                    }});
+                }});
+            }} else {{
+                nodesDataSet.forEach(node => {{
+                    const orig = rawNodes.find(n => n.id === node.id);
+                    nodesDataSet.update({{
+                        id: node.id,
+                        opacity: 1.0,
+                        color: orig.color,
+                        borderWidth: (node.id === masterHubId ? 3 : 1)
+                    }});
+                }});
+            }}
+        }}
+
+        // Aplicação inicial (se houver termo buscado, acende imediatamente)
+        network.once("stabilizationIterationsDone", function() {{
+            fitView();
+            if (targetSearchId) {{
+                applyHighlight(targetSearchId);
+            }}
+        }});
+
+        network.on("click", function(params) {{
+            if (params.nodes.length > 0) {{
+                applyHighlight(params.nodes[0]);
+            }} else {{
+                applyHighlight(null);
+            }}
+        }});
+
+        function updateAdaptiveFont() {{
+            if (!isAdaptive) return;
+            const scale = network.getScale();
+            if (!scale || isNaN(scale) || scale <= 0.05) return;
+            
+            const targetSize = Math.max(9, Math.min(30, Math.round(baseFontSize / scale)));
+            const updates = [];
+            nodesDataSet.forEach(n => {{
+                updates.push({{ id: n.id, font: {{ size: targetSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }} }});
+            }});
+            nodesDataSet.update(updates);
+        }}
+
+        function toggleAdaptive() {{
+            isAdaptive = document.getElementById('chk-adaptive').checked;
+            const updates = [];
+            nodesDataSet.forEach(n => {{
+                updates.push({{ id: n.id, font: {{ size: baseFontSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }} }});
+            }});
+            nodesDataSet.update(updates);
+            if (isAdaptive) updateAdaptiveFont();
+        }}
+
+        network.on("zoom", function() {{
+            if (isAdaptive) {{
+                if (zoomTimeout) clearTimeout(zoomTimeout);
+                zoomTimeout = setTimeout(updateAdaptiveFont, 160);
+            }}
+        }});
+
+        function changeLayout(mode) {{
+            if (mode === "organico") {{
+                network.setOptions({{
+                    layout: {{ hierarchical: false }},
+                    physics: {{
+                        enabled: true,
+                        solver: 'barnesHut',
+                        barnesHut: {{
+                            gravitationalConstant: -4200,
+                            centralGravity: 0.18,
+                            springLength: 130,
+                            springConstant: 0.05,
+                            damping: 0.88,
+                            avoidOverlap: 0.35
+                        }}
+                    }}
+                }});
+                isFrozen = false;
+                document.getElementById('btn-freeze').innerText = "⏸️ Congelar";
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 350);
+            }} 
+            else if (mode === "constelacao") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const centerNode = rawNodes.find(n => n.id === masterHubId) || rawNodes[0];
+                const cpfs = rawNodes.filter(n => n.id.startsWith("CPF_") && n.id !== centerNode.id);
+                const telefones = rawNodes.filter(n => n.id.startsWith("TEL_") && n.id !== centerNode.id);
+                const placas = rawNodes.filter(n => n.id.startsWith("PLACA_") && n.id !== centerNode.id);
+
+                const updates = [];
+                updates.push({{
+                    id: centerNode.id, x: 0, y: 0, physics: false, borderWidth: 3,
+                    color: {{ background: centerNode.color.background, border: '#FBBF24' }}
+                }});
+
+                const radiusCPF = Math.max(180, cpfs.length * 13);
+                const radiusTEL = Math.max(300, radiusCPF + 120, telefones.length * 16);
+                const radiusPLACA = Math.max(440, radiusTEL + 120, placas.length * 15);
+
+                cpfs.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(cpfs.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusCPF * Math.cos(ang)), y: Math.round(radiusCPF * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                telefones.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(telefones.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusTEL * Math.cos(ang)), y: Math.round(radiusTEL * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                placas.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(placas.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusPLACA * Math.cos(ang)), y: Math.round(radiusPLACA * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                nodesDataSet.update(updates);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+            else if (mode === "celulas") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const updates = [];
+                const grupos = {{}};
+                rawNodes.forEach(node => {{
+                    const pref = node.id.split("_")[0];
+                    if (!grupos[pref]) grupos[pref] = [];
+                    grupos[pref].push(node);
+                }});
+
+                const blocos = Object.values(grupos);
+                const blocoRadius = 460;
+                blocos.forEach((grupo, grupoIdx) => {{
+                    const angGrupo = (2 * Math.PI * grupoIdx) / Math.max(blocos.length, 1);
+                    const cx = blocoRadius * Math.cos(angGrupo);
+                    const cy = blocoRadius * Math.sin(angGrupo);
+                    const internalRadius = Math.max(130, grupo.length * 13);
+
+                    grupo.forEach((node, idx) => {{
+                        const ang = (2 * Math.PI * idx) / Math.max(grupo.length, 1);
+                        updates.push({{
+                            id: node.id,
+                            x: Math.round(cx + (internalRadius * Math.cos(ang))),
+                            y: Math.round(cy + (internalRadius * Math.sin(ang))),
+                            physics: false,
+                            borderWidth: (node.id === masterHubId ? 3 : 1),
+                            color: node.color
+                        }});
+                    }});
+                }});
+                nodesDataSet.update(updates);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+            else if (mode === "radial") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const centerNode = rawNodes.find(n => n.id === masterHubId) || rawNodes[0];
+                const others = rawNodes.filter(n => n.id !== centerNode.id);
+                const layer1 = others.filter(n => n.id.startsWith("CPF_"));
+                const layer2 = others.filter(n => !n.id.startsWith("CPF_"));
+
+                const coords = [];
+                coords.push({{ id: centerNode.id, x: 0, y: 0, physics: false }});
+                const r1 = Math.max(150, layer1.length * 22);
+                layer1.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, layer1.length);
+                    coords.push({{ id: n.id, x: Math.round(r1 * Math.cos(t)), y: Math.round(r1 * Math.sin(t)), physics: false }});
+                }});
+                const r2 = Math.max(300, layer2.length * 16);
+                layer2.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, layer2.length);
+                    coords.push({{ id: n.id, x: Math.round(r2 * Math.cos(t)), y: Math.round(r2 * Math.sin(t)), physics: false }});
+                }});
+                nodesDataSet.update(coords);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }} 
+            else if (mode === "arvore") {{
+                network.setOptions({{
+                    layout: {{ hierarchical: {{ direction: "UD", sortMethod: "hubsize", levelSeparation: 140, nodeSpacing: 150 }} }},
+                    physics: {{ enabled: false }}
+                }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+            else if (mode === "circular") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const N = rawNodes.length;
+                const radius = Math.max(200, N * 18);
+                const coords = [];
+                rawNodes.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, N);
+                    coords.push({{ id: n.id, x: Math.round(radius * Math.cos(t)), y: Math.round(radius * Math.sin(t)), physics: false }});
+                }});
+                nodesDataSet.update(coords);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+        }}
+
+        function toggleFreeze() {{
+            isFrozen = !isFrozen;
+            network.setOptions({{ physics: {{ enabled: !isFrozen }} }});
+            document.getElementById('btn-freeze').innerText = isFrozen ? "▶️ Liberar" : "⏸️ Congelar";
+        }}
+
+        async function copyToClipboard() {{
+            try {{
+                const canvas = container.querySelector('canvas');
+                canvas.toBlob(async function(blob) {{
+                    await navigator.clipboard.write([new ClipboardItem({{ 'image/png': blob }})]);
+                    alert("✅ Imagem copiada para a área de transferência!");
+                }});
+            }} catch(e) {{
+                alert("Use o botão 'PNG' para salvar diretamente.");
+            }}
+        }}
+
+        function exportPNG() {{
+            const canvas = container.querySelector('canvas');
+            const a = document.createElement('a');
+            a.download = 'evidencia_caso_lcfo.png';
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+        }}
+    </script>
+</body>
+</html>
+"""
+
+# =====================================================
+# 6. CARREGAMENTO INICIAL DAS REDES
+# =====================================================
+G, cluster_info = carregar_redes()
+
+if not G or not cluster_info:
+    st.info("👈 Nenhum dado processado. Abra o menu lateral à esquerda e clique em **'Ingerir Planilhas no SQLite'**.")
+    st.stop()
+
+# =====================================================
+# 7. BARRA LATERAL (CENTRAL DE CONTROLE DO CASO)
+# =====================================================
+with st.sidebar:
+    st.markdown("### ⚙️ Gestão da Base")
+    if st.button("🔄 Ingerir Planilhas no SQLite", use_container_width=True):
+        with st.spinner("Atualizando registros..."):
+            qtd_arq, qtd_reg = carregar_arquivos_para_sqlite()
+            st.cache_data.clear()
+            if qtd_arq > 0:
+                st.success(f"{qtd_arq} arquivos ingeridos ({qtd_reg} registros limpos).")
+            else:
+                st.warning("Nenhum arquivo na pasta 'casos_duplicidade'.")
+
+    st.markdown("---")
+    st.markdown("### 📂 Seleção da Célula")
+    
+    termo_busca = st.text_input("Buscar por CPF, Placa ou Telefone:", placeholder="Digite para filtrar...").strip()
+    
+    cluster_selecionado = None
+    node_alvo_destaque = ""
+    
+    if termo_busca:
+        termo_clean = re.sub(r'[^a-zA-Z0-9]', '', termo_busca).upper()
+        alvos = [n for n in G.nodes if termo_clean in n]
+        if alvos:
+            alvo = alvos[0]
+            node_alvo_destaque = alvo
+            for c in cluster_info:
+                if alvo in c["nodes"]:
+                    cluster_selecionado = c
+                    st.success(f"🎯 Localizado na Célula #{c['id']}")
+                    break
+        else:
+            st.warning("Nenhum vínculo com essa chave.")
+
+    opcoes = {f"Célula #{c['id']} ({c['tamanho']} nós) - {c['hub_label']}": c['id'] for c in cluster_info[:100]}
+    
+    if not cluster_selecionado:
+        sel_box = st.selectbox("Selecione o Caso Ativo:", list(opcoes.keys()))
+        cluster_selecionado = next(c for c in cluster_info if c["id"] == opcoes[sel_box])
+
+    nos_celula = cluster_selecionado["nodes"]
+    qtd_tels_caso = len([n for n in nos_celula if n.startswith("TEL_")])
+    qtd_cpfs_caso = len([n for n in nos_celula if n.startswith("CPF_")])
+    qtd_placas_caso = len([n for n in nos_celula if n.startswith("PLACA_")])
+
+    st.markdown("---")
+    st.markdown("### 🎯 Filtros de Entidades")
+    mostrar_tel = st.checkbox(f"🚨 Telefones ({qtd_tels_caso})", value=True)
+    mostrar_cpf = st.checkbox(f"👤 Titulares ({qtd_cpfs_caso})", value=True)
+    mostrar_placa = st.checkbox(f"🚗 Placas ({qtd_placas_caso})", value=True)
+
+    st.markdown("---")
+    st.markdown("### 🔤 Ajuste Visual")
+    font_slider = st.slider("Tamanho da Fonte (px):", min_value=10, max_value=20, value=12)
+
+# =====================================================
+# 8. CONSULTA DE DETALHES DO CASO NO SQLITE
+# =====================================================
+lista_cpfs = [n.replace("CPF_", "") for n in cluster_selecionado["nodes"] if n.startswith("CPF_")]
+lista_tels = [n.replace("TEL_", "") for n in cluster_selecionado["nodes"] if n.startswith("TEL_")]
+lista_placas = [n.replace("PLACA_", "") for n in cluster_selecionado["nodes"] if n.startswith("PLACA_")]
+
+conn = get_db_connection()
+query = f"""
+    SELECT data, id_assistencia, titular, cpf, telefone, placa, cidade, uf, latitude, longitude
+    FROM assistencias 
+    WHERE cpf IN ({','.join(['?']*len(lista_cpfs))})
+       OR telefone IN ({','.join(['?']*len(lista_tels))})
+       OR placa IN ({','.join(['?']*len(lista_placas))})
+"""
+params = lista_cpfs + lista_tels + lista_placas
+df_detalhes = pd.read_sql_query(query, conn, params=params)
+conn.close()
+
+total_assistencias = len(df_detalhes)
+
+periodo_str = "Sem datas"
+if not df_detalhes.empty and "data" in df_detalhes.columns:
+    df_temp = df_detalhes.dropna(subset=["data"]).copy()
+    if not df_temp.empty:
+        dts_validas = pd.to_datetime(df_temp["data"], errors="coerce").dropna()
+        if not dts_validas.empty:
+            periodo_str = f"{dts_validas.min().strftime('%b/%Y')} → {dts_validas.max().strftime('%b/%Y')}"
+
+# =====================================================
+# 9. CABEÇALHO COMPACTO & HUD DO CASO ATIVO
+# =====================================================
+col_header1, col_header2 = st.columns([3.0, 2.0])
+with col_header1:
+    st.markdown("<h4 style='margin:0; color:#38BDF8;'>🛡️ Mesa de Inteligência Forense - LCFO</h4>", unsafe_allow_html=True)
+with col_header2:
+    st.caption(f"Base Consolidada: {len(cluster_info):,} Células | {len(G.nodes):,} Entidades | {len(G.edges):,} Conexões")
+
+st.markdown(f"""
+<div class="hud-bar">
+    <div style="display:flex; align-items:center; gap:20px;">
+        <span style="font-size:0.95rem; font-weight:700; color:#F8FAFC;">
+            🚨 CÉLULA #{cluster_selecionado['id']}
+        </span>
+        <span style="font-size:0.82rem; color:#94A3B8;">
+            Âncora Central: <b style="color:#FBBF24;">{cluster_selecionado['hub_label']}</b>
+        </span>
+        <span style="font-size:0.82rem; color:#94A3B8;">
+            Total de Assistências: <b style="color:#38BDF8;">{total_assistencias} ocorrências</b>
+        </span>
+        <span style="font-size:0.82rem; color:#94A3B8;">
+            Período Ativo: <b style="color:#E2E8F0;">{periodo_str}</b>
+        </span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# =====================================================
+# 10. SUBGRAFO FORENSE
+# =====================================================
+subG = G.subgraph(cluster_selecionado["nodes"])
+
+filtro_tipos = []
+if mostrar_tel: filtro_tipos.append("telefone")
+if mostrar_cpf: filtro_tipos.append("cpf")
+if mostrar_placa: filtro_tipos.append("placa")
+
+nos_filtrados = [n for n in subG.nodes if subG.nodes[n]["tipo"] in filtro_tipos]
+subG_filtrado = subG.subgraph(nos_filtrados)
+
+cores = {
+    "telefone": {"bg": "#B91C1C", "border": "#EF4444"},
+    "cpf": {"bg": "#0284C7", "border": "#38BDF8"},
+    "placa": {"bg": "#7C3AED", "border": "#A78BFA"}
+}
+
+vis_nodes = []
+for n in subG_filtrado.nodes:
+    nd = subG_filtrado.nodes[n]
+    cfg = cores[nd["tipo"]]
+    is_hub = (n == cluster_selecionado["hub_id"])
+    vis_nodes.append({
+        "id": n,
+        "label": nd["label"],
+        "shape": "box",
+        "margin": 7,
+        "borderWidth": 3 if is_hub else 1,
+        "color": {
+            "background": cfg["bg"],
+            "border": "#FBBF24" if is_hub else cfg["border"],
+            "highlight": {"background": cfg["border"], "border": "#FFFFFF"}
+        },
+        "font": {"color": "#FFFFFF", "bold": True, "size": font_slider, "face": "Segoe UI"}
+    })
+
+vis_edges = []
+for idx_e, (u, v, data) in enumerate(subG_filtrado.edges(data=True)):
+    peso = data.get("weight", 1)
+    largura = min(8.0, 1.4 + (peso * 0.45))
+    vis_edges.append({
+        "id": f"e_{idx_e}",
+        "from": u,
+        "to": v,
+        "title": f"Vínculo recorrente: {peso} ocorrência(s)",
+        "label": str(peso) if peso >= 3 else "",
+        "font": {"color": "#38BDF8", "size": 9, "strokeWidth": 0, "align": "top"},
+        "color": {"color": "#64748B", "highlight": "#38BDF8"},
+        "width": largura
+    })
+
+# =====================================================
+# 11. ABAS (CANVAS AMPLIADO EM 780px)
+# =====================================================
+tab_grafo, tab_tempo, tab_mapa, tab_dados = st.tabs([
+    "🕸️ Grafo de Vínculos Forense",
+    "🕒 Evolução Temporal",
+    "📍 Radar Territorial",
+    "📋 Tabela de Ocorrências"
+])
+
+html_codigo = gerar_html_grafo(
+    json.dumps(vis_nodes),
+    json.dumps(vis_edges),
+    font_slider,
+    cluster_selecionado["hub_id"],
+    node_alvo_destaque
+)
+
+with tab_grafo:
+    c_info, c_btn = st.columns([3.5, 1.5])
+    with c_info:
+        st.caption(f"Cluster Forense com {len(vis_nodes)} entidades ativas e {len(vis_edges)} conexões ponderadas.")
+    with c_btn:
+        st.download_button(
+            label="💾 Baixar Dossiê HTML deste Caso",
+            data=html_codigo,
+            file_name=f"Dossie_Forense_Caso_{cluster_selecionado['id']}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Gera arquivo interativo autônomo para e-mail ou relatório jurídico."
+        )
+    
+    components.html(html_codigo, height=780)
+
+with tab_tempo:
+    if not df_detalhes.empty and "data" in df_detalhes.columns:
+        st.markdown(f"**Dispersão Cronológica das Assistências da Célula #{cluster_selecionado['id']}** ({len(df_detalhes)} registros)")
+        df_temporal = df_detalhes.copy()
+        df_temporal["dt_parsed"] = pd.to_datetime(df_temporal["data"], errors="coerce")
+        df_temporal = df_temporal.dropna(subset=["dt_parsed"])
+        
+        if not df_temporal.empty:
+            df_temporal["Periodo"] = df_temporal["dt_parsed"].dt.strftime("%Y-%m")
+            serie_temporal = df_temporal.groupby("Periodo").size().reset_index(name="Quantidade de Assistências")
+            serie_temporal = serie_temporal.sort_values(by="Periodo")
+            
+            st.bar_chart(
+                data=serie_temporal.set_index("Periodo"),
+                color="#38BDF8",
+                use_container_width=True
+            )
+        else:
+            st.info("As datas dos registros não estão em formato cronológico reconhecível.")
+    else:
+        st.info("Sem dados de data disponíveis para esta seleção.")
+
+with tab_mapa:
+    if not df_detalhes.empty and "latitude" in df_detalhes.columns:
+        st.markdown(f"**Concentração Geográfica da Célula #{cluster_selecionado['id']}** ({len(df_detalhes)} assistências)")
+        df_mapa = df_detalhes.dropna(subset=["latitude", "longitude"]).copy()
+        if not df_mapa.empty:
+            lat_centro = float(df_mapa["latitude"].mean())
+            lon_centro = float(df_mapa["longitude"].mean())
+            
+            camada_pontos = pdk.Layer(
+                "ScatterplotLayer",
+                data=df_mapa,
+                get_position="[longitude, latitude]",
+                get_color="[56, 189, 248, 190]",
+                get_radius=3500,
+                radius_min_pixels=6,
+                radius_max_pixels=22,
+                pickable=True,
+                auto_highlight=True,
+            )
+
+            view_state = pdk.ViewState(
+                latitude=lat_centro,
+                longitude=lon_centro,
+                zoom=7,
+                pitch=20
+            )
+
+            tooltip = {
+                "html": """
+                    <div style="font-family:'Segoe UI', Tahoma, sans-serif; padding:4px;">
+                        <b style="color:#38BDF8;">🚨 Assistência: {id_assistencia}</b><br/>
+                        <b>Titular:</b> {titular}<br/>
+                        <b>CPF:</b> {cpf}<br/>
+                        <b>Placa:</b> {placa}<br/>
+                        <b>Local:</b> {cidade}/{uf}<br/>
+                        <b>Data:</b> {data}
+                    </div>
+                """,
+                "style": {
+                    "backgroundColor": "rgba(11, 17, 30, 0.95)",
+                    "color": "#F8FAFC",
+                    "border": "1px solid #1E293B",
+                    "borderRadius": "6px",
+                    "fontSize": "11px",
+                    "zIndex": "1000"
+                }
+            }
+
+            deck = pdk.Deck(
+                layers=[camada_pontos],
+                initial_view_state=view_state,
+                tooltip=tooltip,
+                map_style=None
+            )
+
+            st.pydeck_chart(deck, use_container_width=True)
+
+        resumo_cidades = df_detalhes.groupby(["cidade", "uf"]).size().reset_index(name="Total_Assistencias").sort_values(by="Total_Assistencias", ascending=False)
+        st.dataframe(resumo_cidades, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sem dados geográficos para esta seleção.")
+
+with tab_dados:
+    st.dataframe(
+        df_detalhes[["data", "id_assistencia", "titular", "cpf", "telefone", "placa", "cidade", "uf"]],
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    csv_dados = df_detalhes.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Baixar Ocorrências em CSV",
+        data=csv_dados,
+        file_name=f"Assistencias_Caso_{cluster_selecionado['id']}.csv",
+        mime="text/csv"
+    )
