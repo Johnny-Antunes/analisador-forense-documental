@@ -1,0 +1,382 @@
+def obter_vis_js_local():
+    caminho_js = Path(__file__).parent / "vis-network.min.js"
+    if caminho_js.exists():
+        with open(caminho_js, "r", encoding="utf-8") as f:
+            return f"<script type='text/javascript'>{f.read()}</script>"
+    # Fallback para CDN caso o arquivo local não esteja na pasta
+    return '<script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>'
+
+def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="", target_node_id=""):
+    hub_id_safe = json.dumps(hub_id)
+    target_node_id_safe = json.dumps(target_node_id)
+    script_vis = obter_vis_js_local()
+    
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    {script_vis}
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }}
+        body {{ background: #06090F; overflow: hidden; height: 100vh; }}
+        #network {{ width: 100%; height: 100%; }}
+        
+        .floating-controls {{
+            position: absolute; top: 10px; left: 10px; z-index: 10;
+            display: flex; align-items: center; gap: 6px; background: rgba(11, 17, 30, 0.90);
+            border: 1px solid #1E293B; border-radius: 6px; padding: 4px 8px;
+            backdrop-filter: blur(8px);
+        }}
+        .floating-controls select, .floating-controls button {{
+            background: #1E293B; border: 1px solid #334155; color: #F8FAFC;
+            padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer;
+            font-weight: 600; transition: 0.15s; outline: none;
+        }}
+        .floating-controls select:focus, .floating-controls button:hover {{
+            background: #0284C7; border-color: #38BDF8;
+        }}
+        .chk-adaptive {{
+            display: flex; align-items: center; gap: 4px; font-size: 11px;
+            color: #94A3B8; font-weight: 600; cursor: pointer; margin-left: 2px;
+        }}
+        .chk-adaptive input {{ accent-color: #38BDF8; cursor: pointer; }}
+        
+        .legend {{
+            position: absolute; top: 10px; right: 10px; z-index: 10;
+            display: flex; gap: 8px; background: rgba(11, 17, 30, 0.90);
+            border: 1px solid #1E293B; border-radius: 6px; padding: 4px 10px;
+            font-size: 11px; color: #E2E8F0; font-weight: 600; pointer-events: none;
+            backdrop-filter: blur(8px);
+        }}
+        .legend span {{ display: flex; align-items: center; gap: 5px; }}
+        .badge {{ width: 8px; height: 8px; border-radius: 2px; }}
+    </style>
+</head>
+<body>
+    <div class="floating-controls">
+        <select id="sel-layout" onchange="changeLayout(this.value)">
+            <option value="organico">🌀 Teia Fluida Orgânica</option>
+            <option value="constelacao">✨ Constelação (Órbitas Estáticas)</option>
+            <option value="celulas">🧠 Células (Ilhas por Categoria)</option>
+            <option value="radial">⭐ Radial Estrela (i2 Peacock)</option>
+            <option value="arvore">🌲 Árvore Forense (Hub-Spoke)</option>
+            <option value="circular">⭕ Circular 360°</option>
+        </select>
+        <label class="chk-adaptive">
+            <input type="checkbox" id="chk-adaptive" checked onchange="toggleAdaptive()"> Texto Auto
+        </label>
+        <button onclick="fitView()">🎯 Enquadrar</button>
+        <button id="btn-freeze" onclick="toggleFreeze()">⏸️ Congelar</button>
+        <button onclick="copyToClipboard()">📋 Copiar</button>
+        <button onclick="exportPNG()">📷 PNG</button>
+    </div>
+    <div class="legend">
+        <span><div class="badge" style="background:#B91C1C;"></div> Telefone</span>
+        <span><div class="badge" style="background:#0284C7;"></div> Titular</span>
+        <span><div class="badge" style="background:#7C3AED;"></div> Placa</span>
+    </div>
+    <div id="network"></div>
+    <script>
+        const rawNodes = {vis_nodes_json};
+        const rawEdges = {vis_edges_json};
+        const masterHubId = {hub_id_safe};
+        const targetSearchId = {target_node_id_safe};
+        
+        const nodesDataSet = new vis.DataSet(rawNodes);
+        const edgesDataSet = new vis.DataSet(rawEdges);
+        const container = document.getElementById('network');
+        const data = {{ nodes: nodesDataSet, edges: edgesDataSet }};
+        
+        let isFrozen = false;
+        let baseFontSize = {base_font_size};
+        let isAdaptive = true;
+        let zoomTimeout = null;
+        let currentHighlightId = targetSearchId || null;
+
+        const options = {{
+            physics: {{
+                enabled: true,
+                solver: 'barnesHut',
+                barnesHut: {{
+                    gravitationalConstant: -4200,
+                    centralGravity: 0.18,
+                    springLength: 130,
+                    springConstant: 0.05,
+                    damping: 0.88,
+                    avoidOverlap: 0.35
+                }},
+                stabilization: {{ iterations: 120, updateInterval: 25 }}
+            }},
+            interaction: {{ hover: true, zoomView: true, dragNodes: true }}
+        }};
+
+        const network = new vis.Network(container, data, options);
+
+        function fitView() {{
+            network.fit({{
+                animation: {{ duration: 350 }},
+                padding: 40
+            }});
+        }}
+
+        function applyHighlight(selectedId) {{
+            currentHighlightId = selectedId;
+            if (selectedId && nodesDataSet.get(selectedId)) {{
+                const connected = network.getConnectedNodes(selectedId);
+                connected.push(selectedId);
+                
+                nodesDataSet.forEach(node => {{
+                    const orig = rawNodes.find(n => n.id === node.id);
+                    const isSelected = (node.id === selectedId);
+                    nodesDataSet.update({{
+                        id: node.id,
+                        opacity: connected.includes(node.id) ? 1.0 : 0.15,
+                        color: isSelected ? {{
+                            background: orig.color.background,
+                            border: '#FBBF24',
+                            highlight: {{ background: orig.color.background, border: '#FBBF24' }}
+                        }} : orig.color,
+                        borderWidth: isSelected ? 3 : 1
+                    }});
+                }});
+            }} else {{
+                nodesDataSet.forEach(node => {{
+                    const orig = rawNodes.find(n => n.id === node.id);
+                    nodesDataSet.update({{
+                        id: node.id,
+                        opacity: 1.0,
+                        color: orig.color,
+                        borderWidth: (node.id === masterHubId ? 3 : 1)
+                    }});
+                }});
+            }}
+        }}
+
+        network.once("stabilizationIterationsDone", function() {{
+            fitView();
+            if (targetSearchId) {{
+                applyHighlight(targetSearchId);
+            }}
+        }});
+
+        network.on("click", function(params) {{
+            if (params.nodes.length > 0) {{
+                applyHighlight(params.nodes[0]);
+            }} else {{
+                applyHighlight(null);
+            }}
+        }});
+
+        function updateAdaptiveFont() {{
+            if (!isAdaptive) return;
+            const scale = network.getScale();
+            if (!scale || isNaN(scale) || scale <= 0.05) return;
+            
+            const targetSize = Math.max(9, Math.min(30, Math.round(baseFontSize / scale)));
+            const updates = [];
+            nodesDataSet.forEach(n => {{
+                updates.push({{ id: n.id, font: {{ size: targetSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }} }});
+            }});
+            nodesDataSet.update(updates);
+        }}
+
+        function toggleAdaptive() {{
+            isAdaptive = document.getElementById('chk-adaptive').checked;
+            const updates = [];
+            nodesDataSet.forEach(n => {{
+                updates.push({{ id: n.id, font: {{ size: baseFontSize, color: "#FFFFFF", bold: true, face: "Segoe UI" }} }});
+            }});
+            nodesDataSet.update(updates);
+            if (isAdaptive) updateAdaptiveFont();
+        }}
+
+        network.on("zoom", function() {{
+            if (isAdaptive) {{
+                if (zoomTimeout) clearTimeout(zoomTimeout);
+                zoomTimeout = setTimeout(updateAdaptiveFont, 160);
+            }}
+        }});
+
+        function changeLayout(mode) {{
+            if (mode === "organico") {{
+                network.setOptions({{
+                    layout: {{ hierarchical: false }},
+                    physics: {{
+                        enabled: true,
+                        solver: 'barnesHut',
+                        barnesHut: {{
+                            gravitationalConstant: -4200,
+                            centralGravity: 0.18,
+                            springLength: 130,
+                            springConstant: 0.05,
+                            damping: 0.88,
+                            avoidOverlap: 0.35
+                        }}
+                    }}
+                }});
+                isFrozen = false;
+                document.getElementById('btn-freeze').innerText = "⏸️ Congelar";
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 350);
+            }} 
+            else if (mode === "constelacao") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const centerNode = rawNodes.find(n => n.id === masterHubId) || rawNodes[0];
+                const cpfs = rawNodes.filter(n => n.id.startsWith("CPF_") && n.id !== centerNode.id);
+                const telefones = rawNodes.filter(n => n.id.startsWith("TEL_") && n.id !== centerNode.id);
+                const placas = rawNodes.filter(n => n.id.startsWith("PLACA_") && n.id !== centerNode.id);
+
+                const updates = [];
+                updates.push({{
+                    id: centerNode.id, x: 0, y: 0, physics: false, borderWidth: 3,
+                    color: {{ background: centerNode.color.background, border: '#FBBF24' }}
+                }});
+
+                const radiusCPF = Math.max(180, cpfs.length * 13);
+                const radiusTEL = Math.max(300, radiusCPF + 120, telefones.length * 16);
+                const radiusPLACA = Math.max(440, radiusTEL + 120, placas.length * 15);
+
+                cpfs.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(cpfs.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusCPF * Math.cos(ang)), y: Math.round(radiusCPF * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                telefones.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(telefones.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusTEL * Math.cos(ang)), y: Math.round(radiusTEL * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                placas.forEach((n, i) => {{
+                    const ang = (2 * Math.PI * i) / Math.max(placas.length, 1);
+                    updates.push({{ id: n.id, x: Math.round(radiusPLACA * Math.cos(ang)), y: Math.round(radiusPLACA * Math.sin(ang)), physics: false, color: n.color }});
+                }});
+                nodesDataSet.update(updates);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+            else if (mode === "celulas") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const updates = [];
+                const grupos = {{}};
+                rawNodes.forEach(node => {{
+                    const pref = node.id.split("_")[0];
+                    if (!grupos[pref]) grupos[pref] = [];
+                    grupos[pref].push(node);
+                }});
+
+                const blocos = Object.values(grupos);
+                const blocoRadius = 460;
+                blocos.forEach((grupo, grupoIdx) => {{
+                    const angGrupo = (2 * Math.PI * grupoIdx) / Math.max(blocos.length, 1);
+                    const cx = blocoRadius * Math.cos(angGrupo);
+                    const cy = blocoRadius * Math.sin(angGrupo);
+                    const internalRadius = Math.max(130, grupo.length * 13);
+
+                    grupo.forEach((node, idx) => {{
+                        const ang = (2 * Math.PI * idx) / Math.max(grupo.length, 1);
+                        updates.push({{
+                            id: node.id,
+                            x: Math.round(cx + (internalRadius * Math.cos(ang))),
+                            y: Math.round(cy + (internalRadius * Math.sin(ang))),
+                            physics: false,
+                            borderWidth: (node.id === masterHubId ? 3 : 1),
+                            color: node.color
+                        }});
+                    }});
+                }});
+                nodesDataSet.update(updates);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }}
+            else if (mode === "radial") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const centerNode = rawNodes.find(n => n.id === masterHubId) || rawNodes[0];
+                const others = rawNodes.filter(n => n.id !== centerNode.id);
+                const layer1 = others.filter(n => n.id.startsWith("CPF_"));
+                const layer2 = others.filter(n => !n.id.startsWith("CPF_"));
+
+                const coords = [];
+                coords.push({{ id: centerNode.id, x: 0, y: 0, physics: false }});
+                const r1 = Math.max(150, layer1.length * 22);
+                layer1.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, layer1.length);
+                    coords.push({{ id: n.id, x: Math.round(r1 * Math.cos(t)), y: Math.round(r1 * Math.sin(t)), physics: false }});
+                }});
+                const r2 = Math.max(300, layer2.length * 16);
+                layer2.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, layer2.length);
+                    coords.push({{ id: n.id, x: Math.round(r2 * Math.cos(t)), y: Math.round(r2 * Math.sin(t)), physics: false }});
+                }});
+                nodesDataSet.update(coords);
+                setTimeout(() => {{
+                    fitView();
+                    if (currentHighlightId) applyHighlight(currentHighlightId);
+                }}, 60);
+            }} 
+            else if (mode === "arvore") {{
+                network.setOptions({{
+                    layout: {{ hierarchical: {{ direction: "UD", sortMethod: "hubsize", levelSeparation: 140, nodeSpacing: 150 }} }},
+                    physics: {{ enabled: false }}
+                }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+                setTimeout(fitView, 60);
+            }}
+            else if (mode === "circular") {{
+                network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
+                isFrozen = true;
+                document.getElementById('btn-freeze').innerText = "▶️ Liberar";
+
+                const N = rawNodes.length;
+                const radius = Math.max(200, N * 18);
+                const coords = [];
+                rawNodes.forEach((n, i) => {{
+                    const t = (2 * Math.PI * i) / Math.max(1, N);
+                    coords.push({{ id: n.id, x: Math.round(radius * Math.cos(t)), y: Math.round(radius * Math.sin(t)), physics: false }});
+                }});
+                nodesDataSet.update(coords);
+                setTimeout(fitView, 60);
+            }}
+        }}
+
+        function toggleFreeze() {{
+            isFrozen = !isFrozen;
+            network.setOptions({{ physics: {{ enabled: !isFrozen }} }});
+            document.getElementById('btn-freeze').innerText = isFrozen ? "▶️ Liberar" : "⏸️ Congelar";
+        }}
+
+        async function copyToClipboard() {{
+            try {{
+                const canvas = container.querySelector('canvas');
+                canvas.toBlob(async function(blob) {{
+                    await navigator.clipboard.write([new ClipboardItem({{ 'image/png': blob }})]);
+                    alert("✅ Imagem copiada para a área de transferência!");
+                }});
+            }} catch(e) {{
+                alert("Use o botão 'PNG' para salvar diretamente.");
+            }}
+        }}
+
+        function exportPNG() {{
+            const canvas = container.querySelector('canvas');
+            const a = document.createElement('a');
+            a.download = 'evidencia_caso_lcfo.png';
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+        }}
+    </script>
+</body>
+</html>
+"""
