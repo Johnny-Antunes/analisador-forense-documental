@@ -69,11 +69,13 @@ COORDENADAS_CIDADES = {
     "MOGI DAS CRUZES": (-23.5206, -46.1854), "TAUBATE": (-23.0264, -45.5553),
     "FRANCA": (-20.5386, -47.4008), "BARUERI": (-23.5105, -46.8761),
     "RIO DE JANEIRO": (-22.9068, -43.1729), "CURITIBA": (-25.4284, -49.2733),
-    "BELO HORIZONTE": (-19.9167, -43.9345), "SALVADOR": (-12.9714, -38.5014)
+    "BELO HORIZONTE": (-19.9167, -43.9345), "SALVADOR": (-12.9714, -38.5014),
+    "FORTALEZA": (-3.7172, -38.5434), "RECIFE": (-8.0476, -34.8770),
+    "PORTO ALEGRE": (-30.0346, -51.2177), "BRASILIA": (-15.7975, -47.8919)
 }
 
 # =====================================================
-# 2. RESOLUÇÃO CANÔNICA & TRATAMENTO FORENSE
+# 2. RESOLUÇÃO CANÔNICA & TRATAMENTO DE DADOS
 # =====================================================
 def sanitizar_nome_coluna(col):
     if not col: return ""
@@ -89,13 +91,16 @@ def sanitizar_nome_coluna(col):
 def mapear_coluna(df, lista_sinonimos, excluir_se_conter=None):
     if excluir_se_conter is None:
         excluir_se_conter = []
+    
     colunas_mapa = {sanitizar_nome_coluna(c): c for c in df.columns}
+    
     for sin in lista_sinonimos:
         sin_clean = sanitizar_nome_coluna(sin)
         if sin_clean in colunas_mapa:
             orig = colunas_mapa[sin_clean]
             if not any(sanitizar_nome_coluna(exc) in sin_clean for exc in excluir_se_conter):
                 return orig
+                
     for sin in lista_sinonimos:
         sin_clean = sanitizar_nome_coluna(sin)
         for col_clean, col_orig in colunas_mapa.items():
@@ -361,7 +366,7 @@ def carregar_redes():
     return G, cluster_info
 
 # =====================================================
-# 5. GERADOR DO HTML FORENSE VIS.JS COM ILHAS CONEXAS
+# 5. GERADOR DO HTML FORENSE VIS.JS (GRID DE SUB-REDES)
 # =====================================================
 def obter_vis_js_local():
     caminho_js = Path(__file__).parent / "vis-network.min.js"
@@ -422,11 +427,11 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
     <div class="floating-controls">
         <select id="sel-layout" onchange="changeLayout(this.value)">
             <option value="organico">🌀 Teia Fluida Orgânica</option>
-            <option value="constelacao">✨ Constelação (Órbitas com Satélites)</option>
-            <option value="celulas">🧠 Células (Ilhas por Sub-rede)</option>
-            <option value="radial">⭐ Radial Estrela (i2 Peacock)</option>
+            <option value="constelacao">✨ Matriz: Constelações por Sub-rede</option>
+            <option value="celulas">🧠 Matriz: Ilhas Categóricas</option>
+            <option value="radial">⭐ Matriz: Estrelas Radiais (i2)</option>
             <option value="arvore">🌲 Árvore Forense (Hub-Spoke)</option>
-            <option value="circular">⭕ Circular 360°</option>
+            <option value="circular">⭕ Matriz: Círculos Paralelos 360°</option>
         </select>
         <label class="chk-adaptive">
             <input type="checkbox" id="chk-adaptive" checked onchange="toggleAdaptive()"> Texto Auto
@@ -482,7 +487,9 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
             network.fit({{ animation: {{ duration: 350 }}, padding: 40 }});
         }}
 
-        // Algoritmo Forense de Detecção de Ilhas Desconectadas (BFS)
+        // =====================================================
+        // ALGORITMO FORENSE DE DETECÇÃO DE SUB-REDES (BFS)
+        // =====================================================
         function getConnectedComponents(nodes, edges) {{
             const adj = {{}};
             nodes.forEach(n => adj[n.id] = []);
@@ -496,7 +503,7 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
             const components = [];
             
             // Prioriza o componente que contém o Master Hub
-            if (adj[masterHubId]) {{
+            if (adj[masterHubId] && !visited.has(masterHubId)) {{
                 const comp = [];
                 const queue = [masterHubId];
                 visited.add(masterHubId);
@@ -514,6 +521,7 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
                 components.push(comp);
             }}
 
+            // Extrai as demais sub-redes desconectadas
             nodes.forEach(n => {{
                 if (!visited.has(n.id)) {{
                     const comp = [];
@@ -533,7 +541,35 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
                     components.push(comp);
                 }}
             }});
+
+            const masterComp = components.shift();
+            components.sort((a, b) => b.length - a.length);
+            if (masterComp) components.unshift(masterComp);
+
             return components;
+        }}
+
+        // Identifica o nó mais influente dentro de uma sub-rede específica
+        function getLocalHub(comp, edges) {{
+            if (comp.length <= 1) return comp[0];
+            const nodeIds = new Set(comp.map(n => n.id));
+            const degrees = {{}};
+            comp.forEach(n => degrees[n.id] = 0);
+            edges.forEach(e => {{
+                if (nodeIds.has(e.from) && nodeIds.has(e.to)) {{
+                    degrees[e.from] = (degrees[e.from] || 0) + 1;
+                    degrees[e.to] = (degrees[e.to] || 0) + 1;
+                }}
+            }});
+            let maxDeg = -1;
+            let best = comp[0];
+            comp.forEach(n => {{
+                if (degrees[n.id] > maxDeg) {{
+                    maxDeg = degrees[n.id];
+                    best = n;
+                }}
+            }});
+            return best;
         }}
 
         function applyHighlight(selectedId) {{
@@ -627,135 +663,129 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
                 setTimeout(fitView, 60);
             }}
             else {{
-                // Modos Geométricos conscientes de Ilhas Conexas
+                // =====================================================
+                // MATRIZ DE GRID FORENSE PARA SUB-REDES ISOLADAS
+                // =====================================================
                 network.setOptions({{ physics: {{ enabled: false }}, layout: {{ hierarchical: false }} }});
                 isFrozen = true;
                 document.getElementById('btn-freeze').innerText = "▶️ Liberar";
 
                 const components = getConnectedComponents(rawNodes, rawEdges);
+                const numComps = components.length;
+
+                // Dimensionamento dinâmico de Grid (Colunas x Linhas)
+                const cols = numComps <= 1 ? 1 : (numComps <= 4 ? 2 : (numComps <= 9 ? 3 : 4));
+                const rows = Math.ceil(numComps / cols);
+
+                // Cálculo de raio de cada sub-rede para evitar colisões
+                const compRadii = components.map(c => Math.max(90, Math.min(420, c.length * 15)));
+                const maxRadius = Math.max(...compRadii, 120);
+                const cellWidth = Math.max(680, maxRadius * 2 + 160);
+                const cellHeight = Math.max(580, maxRadius * 2 + 140);
+
                 const updates = [];
 
-                if (mode === "constelacao") {{
-                    // O componente principal fica no centro (0,0) com suas órbitas
-                    const mainComp = components[0] || [];
-                    const centerNode = mainComp.find(n => n.id === masterHubId) || mainComp[0] || rawNodes[0];
-                    const cpfs = mainComp.filter(n => n.id.startsWith("CPF_") && n.id !== centerNode.id);
-                    const tels = mainComp.filter(n => n.id.startsWith("TEL_") && n.id !== centerNode.id);
-                    const placas = mainComp.filter(n => n.id.startsWith("PLACA_") && n.id !== centerNode.id);
+                components.forEach((comp, k) => {{
+                    // Posição central da célula na Matriz Grid
+                    const col = k % cols;
+                    const row = Math.floor(k / cols);
+                    const cx = Math.round((col - (cols - 1) / 2) * cellWidth);
+                    const cy = Math.round((row - (rows - 1) / 2) * cellHeight);
 
-                    updates.push({{ id: centerNode.id, x: 0, y: 0, physics: false, borderWidth: 3, color: {{ background: centerNode.color.background, border: '#FBBF24' }} }});
-                    const rCPF = Math.max(160, cpfs.length * 12);
-                    const rTEL = Math.max(280, rCPF + 110, tels.length * 15);
-                    const rPLACA = Math.max(420, rTEL + 110, placas.length * 14);
+                    // Local Hub deste componente específico
+                    const localHub = comp.find(n => n.id === masterHubId) || getLocalHub(comp, rawEdges);
 
-                    cpfs.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(cpfs.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(rCPF * Math.cos(a)), y: Math.round(rCPF * Math.sin(a)), physics: false, color: n.color }});
-                    }});
-                    tels.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(tels.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(rTEL * Math.cos(a)), y: Math.round(rTEL * Math.sin(a)), physics: false, color: n.color }});
-                    }});
-                    placas.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(placas.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(rPLACA * Math.cos(a)), y: Math.round(rPLACA * Math.sin(a)), physics: false, color: n.color }});
-                    }});
+                    if (mode === "constelacao") {{
+                        const cpfs = comp.filter(n => n.id.startsWith("CPF_") && n.id !== localHub.id);
+                        const tels = comp.filter(n => n.id.startsWith("TEL_") && n.id !== localHub.id);
+                        const placas = comp.filter(n => n.id.startsWith("PLACA_") && n.id !== localHub.id);
 
-                    // Fragmentos desconectados são desenhados como satélites ao redor do sistema central
-                    const satellites = components.slice(1);
-                    const satOrbitRadius = Math.max(650, rPLACA + 180);
-                    satellites.forEach((sat, satIdx) => {{
-                        const satAngle = (2 * Math.PI * satIdx) / Math.max(satellites.length, 1);
-                        const cx = Math.round(satOrbitRadius * Math.cos(satAngle));
-                        const cy = Math.round(satOrbitRadius * Math.sin(satAngle));
-                        const satRadius = Math.max(60, sat.length * 16);
-
-                        sat.forEach((sn, sIdx) => {{
-                            const a = (2 * Math.PI * sIdx) / Math.max(sat.length, 1);
-                            updates.push({{ id: sn.id, x: Math.round(cx + (satRadius * Math.cos(a))), y: Math.round(cy + (satRadius * Math.sin(a))), physics: false, color: sn.color }});
+                        updates.push({{
+                            id: localHub.id, x: cx, y: cy, physics: false,
+                            borderWidth: (localHub.id === masterHubId ? 3 : 2),
+                            color: {{ background: localHub.color.background, border: (localHub.id === masterHubId ? '#FBBF24' : '#38BDF8') }}
                         }});
-                    }});
-                }}
-                else if (mode === "celulas") {{
-                    // Cada componente desconectado forma sua própria ilha física circular
-                    const totalComps = components.length;
-                    const ringRadius = Math.max(380, totalComps * 120);
 
-                    components.forEach((comp, cIdx) => {{
-                        const cAngle = (2 * Math.PI * cIdx) / Math.max(totalComps, 1);
-                        const cx = Math.round(ringRadius * Math.cos(cAngle));
-                        const cy = Math.round(ringRadius * Math.sin(cAngle));
-                        const compRadius = Math.max(80, comp.length * 14);
+                        const rCPF = Math.max(70, cpfs.length * 10);
+                        const rTEL = Math.max(140, rCPF + 65, tels.length * 12);
+                        const rPLACA = Math.max(210, rTEL + 65, placas.length * 12);
 
-                        comp.forEach((node, nIdx) => {{
-                            const a = (2 * Math.PI * nIdx) / Math.max(comp.length, 1);
+                        cpfs.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(cpfs.length, 1);
+                            updates.push({{ id: n.id, x: Math.round(cx + (rCPF * Math.cos(a))), y: Math.round(cy + (rCPF * Math.sin(a))), physics: false, color: n.color }});
+                        }});
+                        tels.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(tels.length, 1);
+                            updates.push({{ id: n.id, x: Math.round(cx + (rTEL * Math.cos(a))), y: Math.round(cy + (rTEL * Math.sin(a))), physics: false, color: n.color }});
+                        }});
+                        placas.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(placas.length, 1);
+                            updates.push({{ id: n.id, x: Math.round(cx + (rPLACA * Math.cos(a))), y: Math.round(cy + (rPLACA * Math.sin(a))), physics: false, color: n.color }});
+                        }});
+                    }}
+                    else if (mode === "radial") {{
+                        const others = comp.filter(n => n.id !== localHub.id);
+                        const l1 = others.filter(n => n.id.startsWith("CPF_"));
+                        const l2 = others.filter(n => !n.id.startsWith("CPF_"));
+
+                        updates.push({{
+                            id: localHub.id, x: cx, y: cy, physics: false,
+                            borderWidth: (localHub.id === masterHubId ? 3 : 2),
+                            color: {{ background: localHub.color.background, border: (localHub.id === masterHubId ? '#FBBF24' : '#38BDF8') }}
+                        }});
+
+                        const r1 = Math.max(80, l1.length * 14);
+                        l1.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(l1.length, 1);
+                            updates.push({{ id: n.id, x: Math.round(cx + (r1 * Math.cos(a))), y: Math.round(cy + (r1 * Math.sin(a))), physics: false, color: n.color }});
+                        }});
+                        const r2 = Math.max(160, r1 + 65, l2.length * 12);
+                        l2.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(l2.length, 1);
+                            updates.push({{ id: n.id, x: Math.round(cx + (r2 * Math.cos(a))), y: Math.round(cy + (r2 * Math.sin(a))), physics: false, color: n.color }});
+                        }});
+                    }}
+                    else if (mode === "circular") {{
+                        const rCirc = Math.max(75, comp.length * 14);
+                        comp.forEach((n, i) => {{
+                            const a = (2 * Math.PI * i) / Math.max(comp.length, 1);
                             updates.push({{
-                                id: node.id,
-                                x: Math.round(cx + (compRadius * Math.cos(a))),
-                                y: Math.round(cy + (compRadius * Math.sin(a))),
-                                physics: false,
-                                borderWidth: (node.id === masterHubId ? 3 : 1),
-                                color: node.color
+                                id: n.id, x: Math.round(cx + (rCirc * Math.cos(a))), y: Math.round(cy + (rCirc * Math.sin(a))),
+                                physics: false, borderWidth: (n.id === masterHubId ? 3 : 1), color: n.color
                             }});
                         }});
-                    }});
-                }}
-                else if (mode === "radial") {{
-                    // O componente principal forma a estrela central
-                    const mainComp = components[0] || [];
-                    const centerNode = mainComp.find(n => n.id === masterHubId) || mainComp[0] || rawNodes[0];
-                    const others = mainComp.filter(n => n.id !== centerNode.id);
-                    const l1 = others.filter(n => n.id.startsWith("CPF_"));
-                    const l2 = others.filter(n => !n.id.startsWith("CPF_"));
-
-                    updates.push({{ id: centerNode.id, x: 0, y: 0, physics: false }});
-                    const r1 = Math.max(160, l1.length * 18);
-                    l1.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(l1.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(r1 * Math.cos(a)), y: Math.round(r1 * Math.sin(a)), physics: false }});
-                    }});
-                    const r2 = Math.max(320, l2.length * 14);
-                    l2.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(l2.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(r2 * Math.cos(a)), y: Math.round(r2 * Math.sin(a)), physics: false }});
-                    }});
-
-                    // Fragmentos desconectados são colocados em constelações radiais externas
-                    const satellites = components.slice(1);
-                    const satDist = Math.max(550, r2 + 160);
-                    satellites.forEach((sat, satIdx) => {{
-                        const ang = (2 * Math.PI * satIdx) / Math.max(satellites.length, 1);
-                        const cx = Math.round(satDist * Math.cos(ang));
-                        const cy = Math.round(satDist * Math.sin(ang));
-                        const rad = Math.max(50, sat.length * 15);
-                        sat.forEach((sn, sIdx) => {{
-                            const a = (2 * Math.PI * sIdx) / Math.max(sat.length, 1);
-                            updates.push({{ id: sn.id, x: Math.round(cx + (rad * Math.cos(a))), y: Math.round(cy + (rad * Math.sin(a))), physics: false }});
+                    }}
+                    else if (mode === "celulas") {{
+                        // Agrupa por categoria dentro deste componente
+                        const grupos = {{}};
+                        comp.forEach(node => {{
+                            const pref = node.id.split("_")[0];
+                            if (!grupos[pref]) grupos[pref] = [];
+                            grupos[pref].push(node);
                         }});
-                    }});
-                }}
-                else if (mode === "circular") {{
-                    // O círculo central contém a rede principal; fragmentos formam anéis satélites
-                    const mainComp = components[0] || [];
-                    const mainRadius = Math.max(220, mainComp.length * 15);
-                    mainComp.forEach((n, i) => {{
-                        const a = (2 * Math.PI * i) / Math.max(mainComp.length, 1);
-                        updates.push({{ id: n.id, x: Math.round(mainRadius * Math.cos(a)), y: Math.round(mainRadius * Math.sin(a)), physics: false }});
-                    }});
+                        const blocos = Object.values(grupos);
+                        const blocoDist = Math.max(110, comp.length * 7);
 
-                    const satellites = components.slice(1);
-                    const satDist = Math.max(480, mainRadius + 180);
-                    satellites.forEach((sat, satIdx) => {{
-                        const ang = (2 * Math.PI * satIdx) / Math.max(satellites.length, 1);
-                        const cx = Math.round(satDist * Math.cos(ang));
-                        const cy = Math.round(satDist * Math.sin(ang));
-                        const rad = Math.max(50, sat.length * 14);
-                        sat.forEach((sn, sIdx) => {{
-                            const a = (2 * Math.PI * sIdx) / Math.max(sat.length, 1);
-                            updates.push({{ id: sn.id, x: Math.round(cx + (rad * Math.cos(a))), y: Math.round(cy + (rad * Math.sin(a))), physics: false }});
+                        blocos.forEach((grupo, gIdx) => {{
+                            const angG = (2 * Math.PI * gIdx) / Math.max(blocos.length, 1);
+                            const gcx = Math.round(cx + (blocoDist * Math.cos(angG)));
+                            const gcy = Math.round(cy + (blocoDist * Math.sin(angG)));
+                            const internalR = Math.max(45, grupo.length * 10);
+
+                            grupo.forEach((node, nIdx) => {{
+                                const a = (2 * Math.PI * nIdx) / Math.max(grupo.length, 1);
+                                updates.push({{
+                                    id: node.id,
+                                    x: Math.round(gcx + (internalR * Math.cos(a))),
+                                    y: Math.round(gcy + (internalR * Math.sin(a))),
+                                    physics: false,
+                                    borderWidth: (node.id === masterHubId ? 3 : 1),
+                                    color: node.color
+                                }});
+                            }});
                         }});
-                    }});
-                }}
+                    }}
+                }});
 
                 nodesDataSet.update(updates);
                 setTimeout(() => {{ fitView(); if (currentHighlightId) applyHighlight(currentHighlightId); }}, 60);
@@ -985,7 +1015,7 @@ for idx_e, (u, v, data) in enumerate(subG_filtrado.edges(data=True)):
     })
 
 # =====================================================
-# 12. ABAS (CANVAS 780px)
+# 12. ABAS (CANVAS AMPLIADO EM 780px)
 # =====================================================
 tab_grafo, tab_tempo, tab_mapa, tab_dados = st.tabs([
     "🕸️ Grafo de Vínculos Forense",
