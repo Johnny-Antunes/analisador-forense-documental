@@ -52,8 +52,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 DB_PATH = Path(__file__).parent / "banco_fraudes.db"
-PASTA_CASOS = Path(__file__).parent / "casos_duplicidade"
-PASTA_CASOS.mkdir(exist_ok=True)
+
+# Caminho corporativo oficial identificado no e-mail (com fallback para pasta local)
+CAMINHO_REDE_OFICIAL = r"T:\Corporativo\OPERAÇÕES\CPO\QUERIES\Verificação Blacklist - Data Criação ME\Duplicidade de Placa"
+PASTA_LOCAL = Path(__file__).parent / "casos_duplicidade"
+PASTA_LOCAL.mkdir(exist_ok=True)
 
 COORDENADAS_CIDADES = {
     "SAO PAULO": (-23.5505, -46.6333), "CAMPINAS": (-22.9056, -47.0608),
@@ -143,16 +146,41 @@ def obter_coordenadas(cidade, uf):
     return (-23.5505, -46.6333)
 
 # =====================================================
-# 3. INGESTÃO SQLITE (CONFORME PLANILHAS DA OPERAÇÃO)
+# 3. GESTÃO E INGESTÃO SQLITE (COM AUTOCORREÇÃO DE SCHEMA)
 # =====================================================
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-def carregar_arquivos_para_sqlite():
-    arquivos = list(PASTA_CASOS.glob("*.xlsx"))
-    if not arquivos: return 0, 0
+def garantir_schema_db():
+    if not DB_PATH.exists(): return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA table_info(assistencias)")
+        cols = [r["name"] for r in cursor.fetchall()]
+        if cols:
+            if "servico" not in cols:
+                cursor.execute("ALTER TABLE assistencias ADD COLUMN servico TEXT DEFAULT 'ASSISTENCIA'")
+            if "bairro" not in cols:
+                cursor.execute("ALTER TABLE assistencias ADD COLUMN bairro TEXT DEFAULT ''")
+            conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+garantir_schema_db()
+
+def carregar_arquivos_para_sqlite(caminho_pasta_str):
+    pasta = Path(caminho_pasta_str.strip())
+    if not pasta.exists():
+        return 0, 0, "Pasta não encontrada no caminho informado."
+
+    arquivos = list(pasta.glob("*.xlsx"))
+    if not arquivos:
+        return 0, 0, f"Nenhuma planilha .xlsx encontrada em '{pasta}'."
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -193,10 +221,7 @@ def carregar_arquivos_para_sqlite():
             col_tel = "TELEFONE_TITULAR" if "TELEFONE_TITULAR" in df.columns else None
             col_cpf = "CPF_CNPJ_USUARIO" if "CPF_CNPJ_USUARIO" in df.columns else None
             col_placa = "PLACA" if "PLACA" in df.columns else None
-            
-            # Mapeamento restrito ao segurado (sem puxar NOME_CLIENTE)
             col_nome = "TITULAR" if "TITULAR" in df.columns else None
-            
             col_cid = "CIDADE_OCORRENCIA" if "CIDADE_OCORRENCIA" in df.columns else None
             col_uf = "ESTADO_OCORRENCIA" if "ESTADO_OCORRENCIA" in df.columns else None
             col_bairro = "BAIRRO_OCORRENCIA" if "BAIRRO_OCORRENCIA" in df.columns else None
@@ -232,23 +257,27 @@ def carregar_arquivos_para_sqlite():
                 total_inseridos += len(lote)
 
         except Exception as e:
-            st.error(f"Erro ao processar {arq.name}: {e}")
+            st.error(f"Erro ao ler {arq.name}: {e}")
 
     conn.commit()
     conn.close()
     progresso_barra.empty()
-    return len(arquivos), total_inseridos
+    return len(arquivos), total_inseridos, ""
 
 # =====================================================
-# 4. PROCESSAMENTO DE REDES (COM PESOS DE LIGAÇÃO)
+# 4. PROCESSAMENTO DE REDES
 # =====================================================
 @st.cache_data
 def carregar_redes():
     if not DB_PATH.exists(): return None, []
 
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT cpf, telefone, placa, titular FROM assistencias", conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("SELECT cpf, telefone, placa, titular FROM assistencias", conn)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
 
     if df.empty: return None, []
 
@@ -299,7 +328,7 @@ def carregar_redes():
     return G, cluster_info
 
 # =====================================================
-# 5. GERADOR DO HTML FORENSE VIS.JS (OFFLINE SEGURO)
+# 5. GERADOR DO HTML FORENSE VIS.JS
 # =====================================================
 def obter_vis_js_local():
     caminho_js = Path(__file__).parent / "vis-network.min.js"
@@ -638,15 +667,29 @@ def gerar_html_grafo(vis_nodes_json, vis_edges_json, base_font_size=12, hub_id="
 # =====================================================
 with st.sidebar:
     st.markdown("### ⚙️ Gestão da Base Operacional")
+    
+    # Caminho sugerido automaticamente (da rede T: se acessível, senão pasta local)
+    pasta_sugerida = CAMINHO_REDE_OFICIAL if Path(CAMINHO_REDE_OFICIAL).exists() else str(PASTA_LOCAL)
+    caminho_input = st.text_input("📁 Caminho da Pasta (.xlsx):", value=pasta_sugerida, help="Pode ser o drive T: ou uma pasta local do computador.")
+    
+    # Detecção em tempo real da quantidade de arquivos encontrados
+    qtd_detectada = 0
+    p_check = Path(caminho_input.strip())
+    if p_check.exists():
+        qtd_detectada = len(list(p_check.glob("*.xlsx")))
+        st.caption(f"🟢 **{qtd_detectada}** planilhas detectadas na pasta.")
+    else:
+        st.caption("🔴 Caminho não acessível ou inexistente.")
+
     if st.button("🔄 Ingerir Planilhas no SQLite", use_container_width=True):
         with st.spinner("Atualizando registros..."):
-            qtd_arq, qtd_reg = carregar_arquivos_para_sqlite()
+            qtd_arq, qtd_reg, msg_erro = carregar_arquivos_para_sqlite(caminho_input)
             st.cache_data.clear()
             if qtd_arq > 0:
-                st.success(f"{qtd_arq} arquivos ingeridos ({qtd_reg} assistências consolidadas).")
+                st.success(f"✅ {qtd_arq} planilhas ingeridas ({qtd_reg:,} assistências consolidadas).")
                 st.rerun()
             else:
-                st.warning("Nenhum arquivo encontrado na pasta 'casos_duplicidade'.")
+                st.warning(msg_erro or "Nenhuma planilha encontrada para carregar.")
 
 # =====================================================
 # 7. CARREGAMENTO DAS REDES E VALIDAÇÃO DA BASE
@@ -654,11 +697,11 @@ with st.sidebar:
 G, cluster_info = carregar_redes()
 
 if not G or not cluster_info:
-    st.info("👈 Nenhum dado processado no banco. Abra a barra lateral e clique em **'🔄 Ingerir Planilhas no SQLite'** para carregar os arquivos da operação.")
+    st.info("👈 Nenhum dado processado no banco. Verifique o caminho da pasta na barra lateral e clique em **'🔄 Ingerir Planilhas no SQLite'**.")
     st.stop()
 
 # =====================================================
-# 8. CONTROLES DO CASO NA BARRA LATERAL (SELEÇÃO E FILTROS)
+# 8. CONTROLES DO CASO NA BARRA LATERAL
 # =====================================================
 with st.sidebar:
     st.markdown("---")
