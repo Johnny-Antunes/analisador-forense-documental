@@ -1,28 +1,52 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
-from database import get_db_connection, obter_versao_criacoes, obter_versao_cidades_risco, obter_cidades_risco_set
+import unicodedata
+import re
+from database import (
+    get_db_connection, obter_versao_criacoes, 
+    obter_versao_cidades_risco, obter_cidades_risco_set
+)
 from utils import normalizar_cidade, obter_coordenadas
 
+ESTADOS_BRASIL = {
+    'ACRE': 'AC', 'ALAGOAS': 'AL', 'AMAPA': 'AP', 'AMAZONAS': 'AM', 'BAHIA': 'BA',
+    'CEARA': 'CE', 'DISTRITO FEDERAL': 'DF', 'ESPIRITO SANTO': 'ES', 'GOIAS': 'GO',
+    'MARANHAO': 'MA', 'MATO GROSSO': 'MT', 'MATO GROSSO DO SUL': 'MS', 'MINAS GERAIS': 'MG',
+    'PARA': 'PA', 'PARAIBA': 'PB', 'PARANA': 'PR', 'PERNAMBUCO': 'PE', 'PIAUI': 'PI',
+    'RIO DE JANEIRO': 'RJ', 'RIO GRANDE DO NORTE': 'RN', 'RIO GRANDE DO SUL': 'RS',
+    'RONDONIA': 'RO', 'RORAIMA': 'RR', 'SANTA CATARINA': 'SC', 'SAO PAULO': 'SP',
+    'SERGIPE': 'SE', 'TOCANTINS': 'TO'
+}
+
+def normalizar_uf_segura(val):
+    if not val or pd.isna(val):
+        return ""
+    v = re.sub(r'[^a-zA-Z]', '', str(val)).upper().strip()
+    if len(v) == 2:
+        return v
+    sem_acento = "".join([c for c in unicodedata.normalize('NFKD', str(val)) if not unicodedata.combining(c)])
+    limpo = re.sub(r'[^a-zA-Z\s]', '', sem_acento).upper().strip()
+    return ESTADOS_BRASIL.get(limpo, v[:2])
+
+
 @st.cache_data
-def calcular_anomalias_macro_cached(versao_dados, versao_cidades):
+def calcular_anomalias_macro_cached(versao_dados, versao_cidades, versao_schema_fix="v2"):
     """
-    Varre o histórico agregado de criações diárias (21 meses) e identifica:
-    1. Explosões macro de volume em praças com histórico consolidado (>= 3 meses ativos).
-    2. Picos isolados em praças com baixo histórico prévio (< 3 meses ativos).
-    3. Anomalias de volume de Pet sem histórico prévio.
-    4. Concentração atípica de serviços residenciais.
-    5. Acionamentos em praças da Watchlist de Risco.
-    Retorna (df_anomalias, kpis_dict, mes_referencia).
+    Varre o histórico agregado de criações diárias puxando as coordenadas que 
+    já foram salvas no SQLite durante a ingestão, eliminando coordenadas nulas.
     """
     conn = get_db_connection()
     try:
+        # Puxa a contagem e a média das coordenadas já gravadas na ingestão
         query = """
             SELECT 
                 cidade, 
                 uf, 
                 strftime('%Y-%m', data) as mes, 
                 COUNT(*) as total_mes,
+                AVG(latitude) as lat_db,
+                AVG(longitude) as lon_db,
                 SUM(CASE WHEN UPPER(servico) LIKE '%PET%' OR UPPER(servico) LIKE '%VETERIN%' THEN 1 ELSE 0 END) as pet_mes,
                 SUM(CASE WHEN UPPER(servico) LIKE '%ELETRIC%' OR UPPER(servico) LIKE '%ENCANAD%' OR UPPER(servico) LIKE '%CHAVEIR%' OR UPPER(servico) LIKE '%DESENTUP%' OR UPPER(servico) LIKE '%HIDRAUL%' THEN 1 ELSE 0 END) as res_mes
             FROM criacoes_diarias
@@ -40,7 +64,7 @@ def calcular_anomalias_macro_cached(versao_dados, versao_cidades):
         return pd.DataFrame(), {}, ""
 
     df["cidade_norm"] = df["cidade"].astype(str).map(normalizar_cidade)
-    df["uf_norm"] = df["uf"].astype(str).str.strip().str.upper()
+    df["uf_norm"] = df["uf"].map(normalizar_uf_segura)
 
     meses = sorted(df["mes"].unique())
     if len(meses) < 2:
@@ -60,6 +84,7 @@ def calcular_anomalias_macro_cached(versao_dados, versao_cidades):
 
     df_merged = pd.merge(df_atual, df_hist, on=["cidade_norm", "uf_norm"], how="left").fillna(0)
 
+    # Cálculo das razões de desvio estatístico
     df_merged["razao_macro"] = (df_merged["total_mes"] / df_merged["media_total"].replace(0, 0.4)).round(1)
     df_merged["razao_pet"] = (df_merged["pet_mes"] / df_merged["media_pet"].replace(0, 0.4)).round(1)
     df_merged["razao_res"] = (df_merged["res_mes"] / df_merged["media_res"].replace(0, 0.4)).round(1)
@@ -88,9 +113,16 @@ def calcular_anomalias_macro_cached(versao_dados, versao_cidades):
             alertas.append("📍 Watchlist de Risco")
 
         if alertas:
-            # Busca coordenada usando a chave normalizada contra a base estática do IBGE
-            lat, lon = obter_coordenadas(row.cidade_norm, row.uf_norm)
-            
+            # 1. Prioridade máxima: Coordenada que já está salva no banco
+            lat = row.lat_db if pd.notna(row.lat_db) and row.lat_db != 0 else None
+            lon = row.lon_db if pd.notna(row.lon_db) and row.lon_db != 0 else None
+
+            # 2. Fallback: Dicionário estático de 5.570 municípios do IBGE
+            if lat is None or lon is None:
+                lat_ibge, lon_ibge = obter_coordenadas(row.cidade_norm, row.uf_norm)
+                if lat_ibge is not None:
+                    lat, lon = lat_ibge, lon_ibge
+
             anomalias.append({
                 "cidade": row.cidade_norm,
                 "uf": row.uf_norm,
@@ -127,4 +159,4 @@ def calcular_anomalias_macro_cached(versao_dados, versao_cidades):
 def obter_radar_anomalias_macro():
     versao_dados = obter_versao_criacoes()
     versao_cidades = obter_versao_cidades_risco()
-    return calcular_anomalias_macro_cached(versao_dados, versao_cidades)
+    return calcular_anomalias_macro_cached(versao_dados, versao_cidades, versao_schema_fix="v2")
