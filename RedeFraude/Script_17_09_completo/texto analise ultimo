@@ -1,0 +1,510 @@
+A leitura deve tratar os dois arquivos como fontes complementares com granularidades diferentes. O ME_DATA_CRIACAO_V2_31122025.csv deve alimentar principalmente serviços, movimentos econômicos, prestadores, custos e deslocamentos, enquanto o RELATORIO_ASSISTENCIAS_31082026.csv deve alimentar a abertura da assistência, horários, expedientes, canais, recusas e assistências informativas.
+
+1. Análise de negócio
+1.1. Unidade principal
+
+A unidade principal do sistema deve ser a assistência, identificada por:
+
+Numero da Assistencia
+
+
+Uma assistência pode ter:
+
+Nenhum serviço, quando for informativa.
+Um ou vários serviços.
+Nenhum ou vários movimentos econômicos.
+Nenhum ou vários expedientes.
+Um ou vários prestadores.
+Movimento original, anulação, bloqueio ou refaturamento.
+Assistências relacionadas.
+
+Portanto, múltiplas linhas com o mesmo número de assistência não são necessariamente duplicidades.
+
+1.2. Finalidade de cada origem
+ME_DATA_CRIACAO_V2_31122025.csv
+
+Deve ser a principal origem para:
+
+Serviço.
+Descrição do serviço.
+Movimento econômico.
+Estado e tipo do movimento.
+Movimento relacionado.
+Prestador.
+Documento do prestador.
+Valores estimados e pagos.
+Origem e destino.
+Informações do veículo.
+Causa da solicitação.
+Pane ou avaria.
+Refaturamentos, bloqueios e anulações.
+RELATORIO_ASSISTENCIAS_31082026.csv
+
+Deve ser a principal origem para:
+
+Abertura da assistência.
+Data e horário da solicitação.
+Data e horário do expediente.
+Data e horário do serviço.
+Canal ou forma de criação.
+Usuário de criação.
+Situação do expediente.
+Motivo da recusa.
+Assistência relacionada.
+Assistências sem serviço.
+Assistências informativas.
+Desistências e negativas.
+2. Análise técnica
+2.1. Identificação obrigatória da origem
+
+Antes de interpretar qualquer coluna, o sistema deve identificar:
+
+tipo_origem = ME_DATA
+
+
+ou:
+
+tipo_origem = RELATORIO_ASSISTENCIAS
+
+
+Isso é obrigatório porque colunas com nomes semelhantes não possuem necessariamente a mesma função nas duas origens.
+
+2.2. Leitura dos documentos
+
+Conforme a regra de negócio confirmada:
+
+No ME Data Criação
+CPF/CNPJ
+    Documento do segurado ou titular
+
+CPF/CNPJ do Prestador
+    Documento do prestador de serviços
+
+No relatório de assistências
+CPF/CNPJ
+    Documento do segurado ou titular
+
+CPF/CNPJ do Usuario
+    Documento do segurado ou titular
+
+
+No relatório de assistências, esses dois campos representam o titular. Não há, nessa origem, um campo confirmado de documento do prestador.
+
+Quando ambos estiverem preenchidos no relatório:
+
+Normalizar os dois.
+Verificar se são iguais.
+Se forem iguais, manter um documento canônico do titular.
+Se apenas um for válido, utilizar o válido.
+Se forem diferentes e ambos válidos, registrar conflito para auditoria.
+Não interpretar nenhum deles como documento do prestador.
+
+O modelo interno deve usar nomes semânticos:
+
+cpf_cnpj_titular
+cpf_cnpj_prestador
+
+2.3. Leitura das datas do ME
+
+Nos campos do ME em que o valor aparece assim:
+
+0025-12-31 00:00:00
+
+
+a leitura correta é:
+
+Data corrigida: 2025-12-31
+Horário: ausente ou não informado
+
+
+A regra deve ser dividida em duas etapas:
+
+Correção do ano
+0025 → 2025
+
+
+A data resultante deve ser validada no calendário.
+
+Tratamento do horário
+
+Apenas o horário integralmente zerado:
+
+00:00:00
+
+
+ou, conforme a estrutura da extração:
+
+000000
+
+
+deve ser tratado como ausente ou não informado.
+
+Isso não invalida a data corrigida.
+
+O resultado recomendado é:
+
+data_evento = 2025-12-31
+hora_evento = NULL
+horario_informado = 0
+ano_corrigido = 1
+precisao_temporal = SOMENTE_DATA
+
+
+A data poderá participar de:
+
+Volumetria diária.
+Recência em dias.
+Reincidência em 7, 30, 60 ou 90 dias.
+Evolução mensal.
+Comparações históricas.
+Transversalidade entre seguradoras.
+
+Ela não poderá participar de:
+
+Análise de madrugada.
+Faixa horária.
+Rajadas em minutos ou horas.
+SLA intradiário.
+Velocidade estimada entre eventos.
+Simultaneidade operacional.
+2.4. Leitura das datas do relatório de assistências
+
+Devem permanecer separadas:
+
+Data de Inclusao da Assistencia
+Data do Expediente
+Data do Servico
+Data do Movimento Economico
+Data de Visado
+
+
+Mesmo que apresentem o mesmo valor, elas representam eventos diferentes.
+
+Semântica recomendada
+Data de Inclusao da Assistencia
+    Momento da abertura ou do contato inicial
+
+Data do Expediente
+    Momento de criação ou processamento do expediente
+
+Data do Servico
+    Momento associado à criação, programação ou execução do serviço
+
+Data do Movimento Economico
+    Momento da movimentação financeira
+
+Data de Visado
+    Momento de aprovação ou processamento correspondente
+
+
+Os timestamps válidos do relatório podem alimentar análise de madrugada e intervalos operacionais. O arquivo analisado possui horários preenchidos na abertura, expediente, serviço e movimento econômico.
+
+2.5. Assistências informativas
+
+Uma assistência deve ser classificada como candidata a informativa quando:
+
+Existe número de assistência.
+Não há serviço.
+Não há movimento econômico.
+A descrição, status, recusa ou situação indica informação, orientação, consulta ou desistência.
+
+Não se deve criar um serviço fictício para ela.
+
+Estrutura sugerida:
+
+possui_servico = 0
+possui_movimento_economico = 0
+assistencia_informativa = 1
+
+
+Na amostra do relatório, foram encontradas 491 assistências em que todas as linhas estavam sem serviço e sem movimento econômico, demonstrando o ganho de cobertura dessa origem.
+
+2.6. Serviços e movimentos econômicos
+
+As contagens devem permanecer separadas:
+
+quantidade_assistencias
+quantidade_servicos
+quantidade_movimentos_economicos
+
+
+Não se deve contar cada linha como uma nova assistência.
+
+Chaves recomendadas
+Assistência:
+Numero da Assistencia
+
+Movimento econômico:
+Numero do Movimento Economico
+
+Relacionamento financeiro:
+Numero do Movimento Relacionado
+
+Expediente:
+Numero do expediente ou Solesp, conforme disponibilidade
+
+Prestador:
+Codigo do Prestador
+
+
+Quando o movimento estiver refaturado, anulado ou bloqueado, ele deve ser preservado como parte do histórico. Não deve ser apagado nem contado automaticamente como um novo atendimento.
+
+3. Riscos identificados
+3.1. Troca da semântica dos documentos
+
+O maior risco é interpretar CPF/CNPJ do relatório como documento do prestador. Conforme a regra confirmada, no relatório tanto CPF/CNPJ quanto CPF/CNPJ do Usuario representam o titular.
+
+Se isso for lido incorretamente, o sistema poderá:
+
+Criar relações falsas.
+Duplicar titulares.
+Identificar hubs inexistentes.
+Contaminar o Fraud Score.
+Associar assistências legítimas ao prestador errado.
+3.2. Falsa concentração à meia-noite
+
+Se 00:00:00 for mantido como horário real no ME, milhares de registros poderão parecer solicitações feitas à meia-noite.
+
+A regra deve ser:
+
+Corrigir a data.
+Invalidar somente o horário 00:00:00.
+
+3.3. Duplicidade de assistência
+
+O ME analisado contém 15.332 linhas para 6.250 assistências, demonstrando que a mesma assistência pode gerar várias linhas. Também foram encontradas 300 duplicatas exatas.
+
+A ingestão precisa distinguir:
+
+Duplicata exata.
+Serviço adicional.
+Novo movimento.
+Refaturamento.
+Anulação.
+Atualização do mesmo registro.
+3.4. Valores inválidos ou placeholders
+
+Devem ser reconhecidos como ausentes ou classificados:
+
+null
+N/A
+NA
+NI
+N.I
+.
+00000000000
+00000000000000
+11111111111
+A INFORMAR
+SEM PLACA
+NÃO EMPLACADO
+Não foi possível identificar o local.
+
+
+Esses valores não devem virar nós do grafo.
+
+3.5. Sobrescrita destrutiva
+
+Ao encontrar uma assistência já existente:
+
+Um valor vazio não pode substituir um valor preenchido.
+Um dado inválido não pode substituir um dado válido.
+Uma data com horário ausente não pode substituir um timestamp completo.
+Uma divergência entre valores válidos não deve ser resolvida silenciosamente.
+O valor anterior deve continuar disponível em auditoria.
+4. Recomendação
+4.1. Fluxo de leitura
+1. Identificar o tipo de arquivo
+2. Validar o cabeçalho
+3. Ler todas as colunas como texto
+4. Preservar os valores brutos
+5. Aplicar o mapeamento específico da origem
+6. Corrigir problemas conhecidos de codificação
+7. Normalizar documentos, telefones e placas
+8. Corrigir o ano 0025 para 2025
+9. Separar data e horário
+10. Tratar somente 000000 como horário ausente
+11. Classificar registros inválidos
+12. Reconciliar por número da assistência
+13. Inserir serviços e movimentos ainda inexistentes
+14. Registrar conflitos e alterações
+15. Atualizar os indicadores investigativos
+
+4.2. Precedência entre as origens
+Abertura e horário:
+Relatório de assistências
+
+Assistência informativa:
+Relatório de assistências
+
+Canal, usuário, recusa e expediente:
+Relatório de assistências
+
+Serviço e movimento econômico:
+ME Data Criação
+
+Documento do prestador:
+CPF/CNPJ do Prestador do ME Data Criação
+
+Documento do titular:
+CPF/CNPJ do ME ou CPF/CNPJ / CPF/CNPJ do Usuario do relatório
+
+Custos:
+ME Data Criação, complementado pelo relatório
+
+Origem e destino:
+Valor válido mais completo, preservando a fonte
+
+4.3. Validação por campo
+Documento do titular
+Remover pontuação.
+Preservar somente dígitos no valor normalizado.
+Validar comprimento.
+Validar dígitos verificadores.
+Identificar sequências repetidas.
+Não criar nó se inválido.
+Preservar o valor original.
+Telefone
+Remover DDI 55 quando aplicável.
+Manter DDD.
+Validar 10 ou 11 dígitos.
+Identificar sequências repetidas.
+Marcar +55000 e semelhantes como inválidos.
+Preservar o valor original.
+Placa
+
+Aceitar:
+
+ABC1234
+ABC1D23
+
+
+Classificar separadamente:
+
+Placa válida.
+Não emplacado.
+Não informado.
+Possível chassi.
+Possível documento.
+Texto deslocado.
+Placa corrompida.
+Cidades e estados
+Corrigir caracteres corrompidos.
+Normalizar acentos para comparação.
+Manter nome apresentável.
+Validar UF contra as 27 unidades federativas.
+Não transformar texto arbitrário nos dois primeiros caracteres.
+Tratar texto de localização não identificada como NULL.
+Manter origem, ocorrência, destino e cidade do prestador separadamente.
+5. Código
+
+A decisão central pode ser representada da seguinte forma:
+
+def interpretar_data_me(valor: str) -> dict[str, object]:
+    """
+    Corrige o ano 0025 para 2025 e trata apenas o horário
+    00:00:00 como não informado.
+    """
+    valor_original = str(valor or "").strip()
+
+    if not valor_original:
+        return {
+            "data": None,
+            "hora": None,
+            "ano_corrigido": False,
+            "horario_informado": False,
+        }
+
+    valor_corrigido = valor_original
+
+    if valor_corrigido.startswith("0025-"):
+        valor_corrigido = "2025-" + valor_corrigido[5:]
+        ano_corrigido = True
+    else:
+        ano_corrigido = False
+
+    data_texto, _, hora_texto = valor_corrigido.partition(" ")
+
+    horario_ausente = hora_texto.replace(":", "") == "000000"
+
+    return {
+        "data": data_texto,
+        "hora": None if horario_ausente else hora_texto or None,
+        "ano_corrigido": ano_corrigido,
+        "horario_informado": bool(hora_texto) and not horario_ausente,
+    }
+
+
+Resultado esperado:
+
+interpretar_data_me("0025-12-31 00:00:00")
+
+data = "2025-12-31"
+hora = None
+ano_corrigido = True
+horario_informado = False
+
+O que permanecerá intacto
+Os 540 dias já armazenados.
+Os números de assistência.
+Os serviços existentes.
+Os movimentos econômicos.
+Os refaturamentos.
+O histórico de casos.
+Os vínculos atuais entre titular, telefone e placa.
+As funcionalidades atuais do grafo.
+O Fraud Score atual durante a transição.
+6. Possíveis melhorias futuras
+
+Depois da ingestão consolidada, os dados poderão sustentar:
+
+Monitoramento temporal
+Solicitações de madrugada.
+Rajadas de contatos.
+Recorrência em horários específicos.
+Intervalos entre abertura, expediente, serviço e ME.
+Concentração noturna por titular, telefone, placa ou canal.
+Assistências informativas
+Consultas recorrentes sem serviço.
+Tentativas antes de um atendimento pago.
+Recusas seguidas de nova abertura.
+Mudança de telefone, placa ou titular entre tentativas.
+Contatos em várias seguradoras.
+Prestadores
+Recorrência prestador-titular.
+Concentração por telefone e placa.
+Volume por cidade e serviço.
+Custos fora do padrão.
+Anulações e refaturamentos.
+Atendimentos simultâneos.
+Deslocamentos fisicamente incompatíveis.
+Guinchos e destinos
+Distância origem-destino.
+Oficina ou endereço de destino recorrente.
+Destino igual à base do prestador.
+Vários segurados levados ao mesmo local.
+Pedágio incompatível com a rota.
+Distância e custo discrepantes.
+Prestadores diferentes usando o mesmo destino.
+Regra resumida definitiva
+ME Data Criação:
+- CPF/CNPJ = titular
+- CPF/CNPJ do Prestador = prestador
+- Corrigir ano 0025 para 2025
+- Tratar somente hora 000000 como não informada
+- Preservar a data corrigida
+
+Relatório de Assistências:
+- CPF/CNPJ = titular
+- CPF/CNPJ do Usuario = titular
+- Não há documento confirmado do prestador
+- Usar timestamps válidos para análise horária
+- Incluir assistências informativas e sem serviço
+
+Consolidação:
+- Uma assistência pode ter zero ou vários serviços
+- Um serviço pode ter movimentos econômicos relacionados
+- Não unir arquivos por simples concatenação
+- Reconciliar pelo Numero da Assistencia
+- Nunca sobrescrever dado válido por vazio ou inválido
+- Preservar origem, valor bruto e histórico de alterações
