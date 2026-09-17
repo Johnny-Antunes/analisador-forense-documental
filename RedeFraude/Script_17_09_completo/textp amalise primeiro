@@ -1,0 +1,506 @@
+Perfeito. Com sua confirmação sobre a semântica dos campos e sobre os horários zerados no ME, atualizo a recomendação: as datas 0025-12-31 00:00:00 não devem ser recuperadas como timestamps investigativos. Devem ser preservadas apenas como valor bruto e classificadas como indisponíveis para análises de horário.
+
+1. Análise de negócio
+Datas do ME com ano 0025
+
+Se os campos apresentam simultaneamente:
+
+Ano incorreto, como 0025;
+Horário sempre igual a 00:00:00;
+Ausência de precisão horária confiável;
+
+então não há ganho investigativo em transformá-los para 2025-12-31 00:00:00.
+
+Essa transformação criaria uma falsa informação: o sistema passaria a sugerir que a assistência ocorreu exatamente à meia-noite, quando o horário real é desconhecido.
+
+Portanto, para os campos afetados no ME_DATA_CRIACAO_V2_31122025.csv, a interpretação correta será:
+
+Data original: 0025-12-31 00:00:00
+Data normalizada para análise horária: NULL
+Qualidade temporal: DATA_CORROMPIDA_SEM_HORARIO
+Pode participar de análise de madrugada: NÃO
+Pode participar de sequência temporal: NÃO
+
+
+A Data do Movimento, quando válida, ainda pode ser mantida como referência de data do ME, mas não deve ser tratada automaticamente como data de abertura ou de solicitação.
+
+Datas do relatório de assistências
+
+O RELATORIO_ASSISTENCIAS_31082026.csv passa a ser a fonte oficial para:
+
+Data e hora da abertura.
+Data e hora do expediente.
+Data e hora do serviço.
+Data e hora do movimento econômico quando disponível.
+Análise de solicitações noturnas e de madrugada.
+Cálculo dos intervalos entre etapas operacionais.
+Formação de uma linha do tempo investigativa.
+
+As datas devem continuar separadas, mesmo quando forem iguais, porque representam eventos operacionais distintos.
+
+Mapeamento confirmado dos documentos
+
+Com a regra de negócio informada, o mapeamento correto é:
+
+No relatório de assistências
+CPF/CNPJ             -> documento do prestador
+CPF/CNPJ do Usuario  -> documento do segurado/titular
+
+No ME Data Criação
+CPF/CNPJ               -> documento do segurado/titular
+CPF/CNPJ do Prestador  -> documento do prestador
+
+
+Essa distinção deve ser explícita no adaptador de cada origem. A coluna genérica CPF/CNPJ não pode ser consumida pelo sistema antes de identificar de qual relatório ela veio.
+
+2. Análise técnica
+Modelo canônico recomendado
+
+Independentemente do nome da coluna na origem, o sistema deve trabalhar internamente com campos semânticos:
+
+documento_titular
+documento_prestador
+
+
+O mapeamento deve acontecer na entrada:
+
+MAPEAMENTO_ME_DATA = {
+    "CPF/CNPJ": "documento_titular",
+    "CPF/CNPJ do Prestador": "documento_prestador",
+}
+
+MAPEAMENTO_RELATORIO_ASSISTENCIAS = {
+    "CPF/CNPJ do Usuario": "documento_titular",
+    "CPF/CNPJ": "documento_prestador",
+}
+
+
+Isso evita que outras partes do sistema precisem conhecer peculiaridades de cada extração.
+
+Data canônica por finalidade
+
+Recomendo estes campos no banco:
+
+data_abertura
+data_expediente
+data_servico
+data_movimento
+data_referencia
+precisao_temporal
+fonte_data
+
+
+A finalidade seria:
+
+data_abertura: momento em que o contato ou assistência foi criado.
+data_expediente: momento associado ao expediente.
+data_servico: momento associado ao serviço.
+data_movimento: momento do movimento econômico.
+data_referencia: campo compatível com as rotinas atuais.
+precisao_temporal: informa se há data e hora, apenas data ou dado inválido.
+fonte_data: identifica qual arquivo originou o valor.
+Classificação de precisão temporal
+
+Sugestão de domínio:
+
+DATA_HORA_CONFIAVEL
+SOMENTE_DATA_CONFIAVEL
+DATA_CORROMPIDA_SEM_HORARIO
+DATA_AUSENTE
+DATA_INVALIDA
+
+
+Uma data marcada como DATA_CORROMPIDA_SEM_HORARIO não poderá alimentar:
+
+Monitoramento de madrugada.
+Intervalos em minutos ou horas.
+Detecção de rajada intradiária.
+Jornada operacional.
+Tempo de atribuição do prestador.
+Incompatibilidade logística por velocidade.
+
+Ela poderá, eventualmente, participar de agregações diárias somente se outra data válida confirmar o mesmo dia.
+
+Precedência temporal
+
+Para uma assistência presente nas duas fontes:
+
+1. Relatório de assistências com timestamp válido.
+2. ME com timestamp efetivamente válido.
+3. Data de movimento válida, apenas para o evento financeiro.
+4. Data corrompida 0025 com 00:00:00 não deve enriquecer o horário.
+
+
+O sistema não deve copiar a Data do Movimento para data_abertura, pois isso alteraria a semântica do evento.
+
+3. Riscos identificados
+Risco de falsa madrugada
+
+Se 0025-12-31 00:00:00 for convertido para 2025-12-31 00:00:00, todas essas assistências parecerão ter sido abertas à meia-noite.
+
+Impactos:
+
+Inflaria o indicador de madrugada.
+Criaria rajadas artificiais às 00:00.
+Contaminaria perfis de CPF, telefone, placa e prestador.
+Poderia elevar indevidamente o Fraud Score.
+Produziria falsos positivos em operadores ou canais.
+
+Por isso, a conversão proposta anteriormente não deve ser aplicada.
+
+Risco de relação falsa entre titular e prestador
+
+Sem adaptadores por origem, o campo CPF/CNPJ teria dois significados:
+
+ME Data: titular
+Relatório Assistências: prestador
+
+
+Uma normalização baseada apenas no nome da coluna poderia:
+
+Criar prestadores como se fossem titulares.
+Associar diversos consumidores ao CNPJ do prestador.
+Transformar um prestador legítimo em hub suspeito.
+Inflar a relação CPFs por telefone.
+Contaminar componentes conectados.
+Produzir transversalidade artificial.
+Elevar incorretamente o score topológico.
+
+Esse risco é especialmente relevante porque o graph_engine.py atualmente cria nós de CPF diretamente a partir da coluna cpf. Se o processo de ingestão alimentar essa coluna com o documento do prestador, toda a rede ficará semanticamente comprometida.
+
+Risco de descarte de evidência do prestador
+
+O documento do prestador não deve simplesmente ser ignorado por não estar hoje no grafo. Ele é um identificador relevante para:
+
+Unificar variações do nome empresarial.
+Identificar códigos diferentes para o mesmo CNPJ.
+Relacionar prestadores entre seguradoras.
+Detectar concentração de atendimentos.
+Identificar prestador operando em cidades distantes.
+Vincular custos, refaturamentos e destinos.
+Detectar prestador compartilhando endereço, telefone ou oficina.
+Risco de sobrescrita de datas válidas
+
+Quando uma assistência já tiver timestamp proveniente do relatório, uma ingestão posterior de ME não poderá substituí-lo por:
+
+0025-12-31 00:00:00
+
+
+A precedência deve considerar validade e precisão, não apenas a data de ingestão mais recente.
+
+4. Recomendação
+Regra definitiva para documentos
+
+Criar adaptadores separados:
+
+AdaptadorMEData
+AdaptadorRelatorioAssistencias
+
+
+Cada adaptador transforma as colunas externas em um modelo interno comum.
+
+Adaptador do ME
+CPF/CNPJ               -> cpf_cnpj_titular
+CPF/CNPJ do Prestador  -> cpf_cnpj_prestador
+
+Adaptador do relatório
+CPF/CNPJ do Usuario  -> cpf_cnpj_titular
+CPF/CNPJ             -> cpf_cnpj_prestador
+
+Regra definitiva para datas 0025
+
+O valor deve ser armazenado em staging, mas rejeitado na camada normalizada:
+
+raw_data_abertura = "0025-12-31 00:00:00"
+data_abertura = NULL
+data_abertura_valida = 0
+precisao_temporal = "DATA_CORROMPIDA_SEM_HORARIO"
+
+Monitoramento de madrugada
+
+Somente incluir um registro quando:
+
+A data for válida.
+O horário estiver disponível.
+A fonte for confiável.
+O valor não tiver sido inferido.
+A precisão estiver marcada como DATA_HORA_CONFIAVEL.
+
+A feature deve registrar também o denominador:
+
+qtd_solicitacoes_com_horario_valido
+qtd_solicitacoes_madrugada
+percentual_madrugada
+
+
+Sem isso, uma entidade com uma assistência de madrugada em apenas um registro válido poderia parecer mais suspeita do que realmente é.
+
+Monitoramento separado por evento
+
+Recomendo medir os horários de forma independente:
+
+Hora de abertura da assistência.
+Hora de criação do expediente.
+Hora de criação do serviço.
+Hora de criação do ME.
+Hora de atribuição do prestador, se disponível.
+
+Para fraude, o evento principal é a abertura da assistência. Os demais ajudam a investigar a operação e o prestador.
+
+5. Código
+
+Nenhum código existente deve ser substituído neste momento. O trecho abaixo representa a implementação recomendada para o futuro adaptador de ingestão.
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+import logging
+from typing import Mapping, Optional
+
+
+logger = logging.getLogger(__name__)
+
+
+class OrigemArquivo(StrEnum):
+    """Origens de dados aceitas pela ingestão."""
+
+    ME_DATA = "ME_DATA"
+    RELATORIO_ASSISTENCIAS = "RELATORIO_ASSISTENCIAS"
+
+
+class PrecisaoTemporal(StrEnum):
+    """Classificação da confiabilidade de uma informação temporal."""
+
+    DATA_HORA_CONFIAVEL = "DATA_HORA_CONFIAVEL"
+    SOMENTE_DATA_CONFIAVEL = "SOMENTE_DATA_CONFIAVEL"
+    DATA_CORROMPIDA_SEM_HORARIO = "DATA_CORROMPIDA_SEM_HORARIO"
+    DATA_AUSENTE = "DATA_AUSENTE"
+    DATA_INVALIDA = "DATA_INVALIDA"
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentoEntidades:
+    """Documentos normalizados conforme a semântica da origem."""
+
+    documento_titular: Optional[str]
+    documento_prestador: Optional[str]
+
+
+@dataclass(frozen=True, slots=True)
+class DataNormalizada:
+    """Resultado auditável da normalização de uma data."""
+
+    valor_original: str
+    valor_normalizado: Optional[datetime]
+    precisao: PrecisaoTemporal
+    pode_analisar_horario: bool
+
+
+def extrair_documentos(
+    registro: Mapping[str, object],
+    origem: OrigemArquivo,
+) -> DocumentoEntidades:
+    """
+    Extrai os documentos do titular e do prestador.
+
+    O significado da coluna CPF/CNPJ depende da origem do arquivo.
+    """
+    if origem == OrigemArquivo.ME_DATA:
+        titular_raw = registro.get("CPF/CNPJ")
+        prestador_raw = registro.get("CPF/CNPJ do Prestador")
+    elif origem == OrigemArquivo.RELATORIO_ASSISTENCIAS:
+        titular_raw = registro.get("CPF/CNPJ do Usuario")
+        prestador_raw = registro.get("CPF/CNPJ")
+    else:
+        raise ValueError(f"Origem de arquivo não suportada: {origem}")
+
+    return DocumentoEntidades(
+        documento_titular=_normalizar_documento(titular_raw),
+        documento_prestador=_normalizar_documento(prestador_raw),
+    )
+
+
+def _normalizar_documento(valor: object) -> Optional"""
+    Normaliza CPF ou CNPJ sem assumir validade dos dígitos verificadores.
+
+    A validação matemática deve ocorrer em uma etapa própria.
+    """
+    digitos = "".join(char for char in str(valor or "") if char.isdigit())
+
+    if not digitos:
+        return None
+
+    if len(set(digitos)) == 1:
+        return None
+
+    if len(digitos) not in {11, 14}:
+        return None
+
+    return digitos
+
+
+def normalizar_data_operacional(
+    valor: object,
+    origem: OrigemArquivo,
+) -> DataNormalizada:
+    """
+    Normaliza timestamps operacionais sem fabricar precisão temporal.
+
+    Datas do ME com ano 0025 e horário 00:00:00 são rejeitadas
+    para análises temporais.
+    """
+    texto = str(valor or "").strip()
+
+    if not texto:
+        return DataNormalizada(
+            valor_original="",
+            valor_normalizado=None,
+            precisao=PrecisaoTemporal.DATA_AUSENTE,
+            pode_analisar_horario=False,
+        )
+
+    if (
+        origem == OrigemArquivo.ME_DATA
+        and texto.startswith("0025-")
+        and texto.endswith("00:00:00")
+    ):
+        logger.warning(
+            "Data do ME rejeitada por corrupção e ausência de horário",
+            extra={
+                "origem": origem.value,
+                "valor_original": texto,
+                "motivo": "ANO_0025_HORARIO_ZERADO",
+            },
+        )
+        return DataNormalizada(
+            valor_original=texto,
+            valor_normalizado=None,
+            precisao=PrecisaoTemporal.DATA_CORROMPIDA_SEM_HORARIO,
+            pode_analisar_horario=False,
+        )
+
+    formatos = (
+        "%Y-%m-%d %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+    )
+
+    for formato in formatos:
+        try:
+            data = datetime.strptime(texto, formato)
+            possui_horario = "%H" in formato
+
+            return DataNormalizada(
+                valor_original=texto,
+                valor_normalizado=data,
+                precisao=(
+                    PrecisaoTemporal.DATA_HORA_CONFIAVEL
+                    if possui_horario
+                    else PrecisaoTemporal.SOMENTE_DATA_CONFIAVEL
+                ),
+                pode_analisar_horario=possui_horario,
+            )
+        except ValueError:
+            continue
+
+    logger.warning(
+        "Data operacional inválida",
+        extra={
+            "origem": origem.value,
+            "valor_original": texto,
+        },
+    )
+
+    return DataNormalizada(
+        valor_original=texto,
+        valor_normalizado=None,
+        precisao=PrecisaoTemporal.DATA_INVALIDA,
+        pode_analisar_horario=False,
+    )
+
+Alteração em relação à proposta anterior
+Código conceitual anterior afetado
+
+A proposta anterior considerava corrigir:
+
+0025-12-31 00:00:00
+
+
+para:
+
+2025-12-31 00:00:00
+
+Nova regra
+valor_normalizado = None
+precisao = PrecisaoTemporal.DATA_CORROMPIDA_SEM_HORARIO
+pode_analisar_horario = False
+
+Motivo
+
+O horário 00:00:00 não representa o momento da ocorrência. Corrigi-lo criaria uma falsa evidência de solicitação à meia-noite.
+
+Risco residual
+
+Ainda será necessário verificar se existe algum registro excepcional com ano 0025 e horário diferente de zero. A regra deve rejeitar todos os anos 0025 para análise até que a origem seja tecnicamente esclarecida, mas registrar separadamente o motivo e o conteúdo original.
+
+6. Possíveis melhorias futuras
+Qualidade temporal
+Percentual de assistências com horário confiável por arquivo.
+Percentual por canal de criação.
+Comparação entre abertura, expediente e serviço.
+Indicador de timestamp corrompido por origem.
+Detecção automática de mudanças no formato da extração.
+Grafo de prestadores
+
+Sem alterar os nós atuais, pode-se preparar futuramente:
+
+PRESTADOR_CNPJ
+PRESTADOR_CODIGO
+OFICINA_DESTINO
+OPERADOR
+ASSISTENCIA
+
+
+Antes de adicionar esses nós ao grafo principal, recomendo construir uma visão separada de prestadores para evitar alterar a identidade dos componentes atuais.
+
+Score temporal
+
+Criar um novo pilar sem modificar imediatamente o score existente:
+
+score_temporal_experimental
+
+
+Durante um período de validação, o sistema exibiria:
+
+Score atual.
+Score temporal experimental.
+Evidências temporais.
+Quantidade de registros com horário válido.
+Impacto que o novo pilar teria no score final.
+
+Somente depois de avaliar falsos positivos, esse pilar seria incorporado ao Fraud Score oficial.
+
+Red Team da decisão
+
+A correção que você apontou evita dois problemas graves:
+
+00:00:00 artificial não será confundido com madrugada real.
+CNPJ do prestador não será confundido com CPF do titular.
+
+A especificação consolidada passa a ser:
+
+ME_DATA:
+    CPF/CNPJ = titular
+    CPF/CNPJ do Prestador = prestador
+    datas 0025 com 00:00:00 = inválidas para horário
+
+RELATORIO_ASSISTENCIAS:
+    CPF/CNPJ do Usuario = titular
+    CPF/CNPJ = prestador
+    timestamps válidos = fonte de monitoramento temporal
+
+
+Essa regra deve ficar documentada e coberta por testes de regressão antes da ingestão dos 85 relatórios.
