@@ -1,0 +1,551 @@
+Você está correto. Minha interpretação anterior foi inadequada: o ano 0025 deve ser corrigido para 2025, enquanto o horário 00:00:00 deve ser tratado separadamente como horário ausente, inválido ou não informado, sem invalidar a data inteira.
+
+1. Análise de negócio
+
+O campo contém duas informações com qualidades diferentes:
+
+0025-12-31 00:00:00
+
+
+A interpretação correta é:
+
+Data: 31/12/2025
+Hora: não informada
+
+
+Portanto:
+
+O ano 0025 é um erro de extração conhecido e determinístico.
+A data pode ser corrigida e utilizada em análises por dia, mês e ano.
+O horário 00:00:00 não deve ser interpretado como uma ocorrência real à meia-noite.
+O registro não pode participar de análises de madrugada.
+O registro pode participar de análises diárias, mensais, sazonais e de recência.
+
+Exemplo:
+
+Valor original:             0025-12-31 00:00:00
+Data corrigida:             2025-12-31
+Horário normalizado:        NULL
+Data e hora normalizadas:   NULL
+Precisão temporal:          SOMENTE_DATA_CONFIAVEL
+
+
+A correção do ano não cria uma informação artificial, pois o contexto da extração permite reconhecer 0025 como 2025. O que produziria informação artificial seria interpretar 00:00:00 como horário real.
+
+2. Análise técnica
+
+A normalização precisa separar:
+
+data_evento
+hora_evento
+timestamp_evento
+precisao_temporal
+valor_original
+ano_corrigido
+horario_informado
+
+
+Para o valor:
+
+0025-12-31 00:00:00
+
+
+o resultado esperado é:
+
+data_evento = 2025-12-31
+hora_evento = NULL
+timestamp_evento = NULL
+precisao_temporal = SOMENTE_DATA_CONFIAVEL
+ano_corrigido = 1
+horario_informado = 0
+valor_original = "0025-12-31 00:00:00"
+
+Uso permitido
+
+A data corrigida pode alimentar:
+
+Quantidade de assistências por dia.
+Quantidade por mês.
+Recência em dias.
+Janela deslizante de 7, 30, 60 ou 90 dias.
+Reincidência residencial.
+Transversalidade entre seguradoras.
+Evolução diária e mensal.
+Comparação com períodos anteriores.
+Ordenação cronológica em granularidade diária.
+Uso não permitido
+
+O registro não pode alimentar:
+
+Análise de madrugada.
+Faixa horária.
+Rajadas em minutos ou horas.
+Tempo entre abertura e expediente.
+Tempo entre expediente e serviço.
+Velocidade geográfica calculada em horas.
+Simultaneidade de solicitações.
+SLA intradiário.
+Incompatibilidade logística baseada em horário.
+Regra importante
+
+O valor 00:00:00 só deve ser tratado como ausente quando vier de campos e origens em que ele representa um preenchimento técnico padrão.
+
+Não se deve criar uma regra global como:
+
+Todo horário 00:00:00 é inválido
+
+
+Isso poderia descartar uma ocorrência legítima registrada exatamente à meia-noite em uma fonte confiável.
+
+A regra deve ser contextual:
+
+ME_DATA + campo afetado pela extração + horário 00:00:00
+    => horário não informado
+
+RELATORIO_ASSISTENCIAS + timestamp válido 00:00:00
+    => horário potencialmente válido
+
+
+Ou seja, a decisão depende de:
+
+Origem do arquivo.
+Nome do campo.
+Padrão conhecido da extração.
+Qualidade observada no conjunto de dados.
+3. Riscos identificados
+Falsa classificação de madrugada
+
+Se o sistema mantiver o horário 00:00:00, poderá classificar milhares de registros como solicitações feitas à meia-noite.
+
+Isso poderia gerar:
+
+Concentração temporal artificial.
+Rajadas inexistentes.
+Falso padrão de madrugada.
+Aumento incorreto do score.
+Incompatibilidade geográfica falsa.
+Alertas indevidos para titulares e prestadores.
+Perda de informação diária
+
+Se todo o valor for convertido para NULL por causa do horário inválido, perderemos uma data corrigível e útil para análise.
+
+Isso prejudicaria:
+
+Recência.
+Reincidência.
+Volumetria diária.
+Comparação de períodos.
+Linha do tempo.
+Análise de transversalidade.
+Monitoramento histórico dos 540 arquivos.
+Construção artificial de timestamp
+
+Não recomendo transformar o valor em:
+
+2025-12-31 12:00:00
+
+
+ou qualquer outro horário padrão. Isso facilitaria tecnicamente alguns cálculos, mas criaria uma precisão inexistente.
+
+Também não recomendo salvar:
+
+2025-12-31 00:00:00
+
+
+como timestamp confiável, mesmo que internamente alguns bancos representem datas dessa forma. Caso seja necessário tecnicamente armazenar assim, deve existir obrigatoriamente um indicador:
+
+horario_informado = 0
+
+
+e todas as consultas horárias devem respeitar esse indicador.
+
+Correção excessivamente ampla
+
+A conversão não deve substituir qualquer ocorrência de 0025 encontrada em campos livres. Ela deve ser aplicada apenas:
+
+Em colunas temporais conhecidas.
+Quando o valor corresponder à estrutura esperada.
+Quando a data resultante for válida.
+Quando a origem estiver mapeada.
+Com preservação do valor bruto.
+4. Recomendação
+
+A regra consolidada deve ser:
+
+Para ME Data Criação
+Ano 0025:
+    corrigir para 2025
+
+Data válida após a correção:
+    manter e utilizar
+
+Horário 00:00:00:
+    tratar como ausente ou não informado
+
+Timestamp completo:
+    não considerar confiável para análise horária
+
+Precisão:
+    SOMENTE_DATA_CONFIAVEL
+
+Para relatório de assistências
+Ano válido:
+    manter
+
+Horário preenchido:
+    manter, inclusive segundos
+
+Horário 00:00:00:
+    avaliar como potencialmente legítimo, pois a origem possui precisão horária
+
+Precisão:
+    DATA_HORA_CONFIAVEL
+
+Estrutura recomendada no banco
+
+Sem remover a coluna data atualmente utilizada, sugiro uma evolução compatível:
+
+data                          campo legado preservado
+data_evento                   data corrigida
+hora_evento                   horário válido ou NULL
+timestamp_evento              preenchido somente com data e hora confiáveis
+horario_informado             0 ou 1
+ano_corrigido                 0 ou 1
+precisao_temporal             classificação da qualidade
+data_original                 conteúdo bruto da extração
+fonte_temporal                origem e coluna
+
+
+A coluna legada deve ser preservada para evitar regressão no correlation_engine.py, enquanto as novas análises passam gradualmente a consumir os campos mais precisos.
+
+5. Código
+Código conceitual anterior afetado
+
+O comportamento incorreto seria:
+
+if texto.startswith("0025-") and texto.endswith("00:00:00"):
+    return DataNormalizada(
+        valor_original=texto,
+        valor_normalizado=None,
+        precisao=PrecisaoTemporal.DATA_CORROMPIDA_SEM_HORARIO,
+        pode_analisar_horario=False,
+    )
+
+
+Esse código descarta indevidamente uma data que pode ser recuperada.
+
+Código novo
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, time
+from enum import StrEnum
+import logging
+import re
+from typing import Optional
+
+
+logger = logging.getLogger(__name__)
+
+
+class OrigemArquivo(StrEnum):
+    """Origens de arquivo reconhecidas pela ingestão."""
+
+    ME_DATA = "ME_DATA"
+    RELATORIO_ASSISTENCIAS = "RELATORIO_ASSISTENCIAS"
+
+
+class PrecisaoTemporal(StrEnum):
+    """Classificação da precisão disponível para um valor temporal."""
+
+    DATA_HORA_CONFIAVEL = "DATA_HORA_CONFIAVEL"
+    SOMENTE_DATA_CONFIAVEL = "SOMENTE_DATA_CONFIAVEL"
+    DATA_AUSENTE = "DATA_AUSENTE"
+    DATA_INVALIDA = "DATA_INVALIDA"
+
+
+@dataclass(frozen=True, slots=True)
+class DataNormalizada:
+    """Representa uma data normalizada com rastreabilidade de qualidade."""
+
+    valor_original: str
+    data_evento: Optional[date]
+    hora_evento: Optional[time]
+    timestamp_evento: Optional[datetime]
+    precisao: PrecisaoTemporal
+    ano_corrigido: bool
+    horario_informado: bool
+    motivo_qualidade: Optional[str] = None
+
+
+_PADRAO_DATA_HORA = re.compile(
+    r"^(?P<ano>\d{4})-"
+    r"(?P<mes>\d{2})-"
+    r"(?P<dia>\d{2})"
+    r"(?:[ T]"
+    r"(?P<hora>\d{2}):"
+    r"(?P<minuto>\d{2}):"
+    r"(?P<segundo>\d{2})"
+    r")?$"
+)
+
+
+def normalizar_data_operacional(
+    valor: object,
+    origem: OrigemArquivo,
+    horario_zerado_representa_ausencia: bool = False,
+) -> DataNormalizada:
+    """
+    Normaliza uma data operacional preservando sua precisão real.
+
+    Regras:
+    - Corrige o ano 0025 para 2025.
+    - Preserva a data corrigida.
+    - Trata 00:00:00 como horário ausente somente quando a estrutura
+      do campo e a origem indicarem preenchimento técnico padrão.
+    - Nunca fabrica um horário.
+    - Preserva o conteúdo original para auditoria.
+    """
+    texto = str(valor or "").strip()
+
+    if not texto:
+        return DataNormalizada(
+            valor_original="",
+            data_evento=None,
+            hora_evento=None,
+            timestamp_evento=None,
+            precisao=PrecisaoTemporal.DATA_AUSENTE,
+            ano_corrigido=False,
+            horario_informado=False,
+            motivo_qualidade="VALOR_AUSENTE",
+        )
+
+    match = _PADRAO_DATA_HORA.fullmatch(texto)
+    if not match:
+        logger.warning(
+            "Formato de data operacional não reconhecido",
+            extra={
+                "origem": origem.value,
+                "valor_original": texto,
+            },
+        )
+        return DataNormalizada(
+            valor_original=texto,
+            data_evento=None,
+            hora_evento=None,
+            timestamp_evento=None,
+            precisao=PrecisaoTemporal.DATA_INVALIDA,
+            ano_corrigido=False,
+            horario_informado=False,
+            motivo_qualidade="FORMATO_NAO_RECONHECIDO",
+        )
+
+    ano_original = int(match.group("ano"))
+    ano_corrigido = ano_original == 25
+    ano_normalizado = 2025 if ano_corrigido else ano_original
+
+    try:
+        data_evento = date(
+            year=ano_normalizado,
+            month=int(match.group("mes")),
+            day=int(match.group("dia")),
+        )
+    except ValueError:
+        logger.warning(
+            "Data operacional inválida após normalização",
+            extra={
+                "origem": origem.value,
+                "valor_original": texto,
+                "ano_normalizado": ano_normalizado,
+            },
+        )
+        return DataNormalizada(
+            valor_original=texto,
+            data_evento=None,
+            hora_evento=None,
+            timestamp_evento=None,
+            precisao=PrecisaoTemporal.DATA_INVALIDA,
+            ano_corrigido=ano_corrigido,
+            horario_informado=False,
+            motivo_qualidade="DATA_CALENDARIO_INVALIDA",
+        )
+
+    possui_horario_na_estrutura = match.group("hora") is not None
+
+    if not possui_horario_na_estrutura:
+        return DataNormalizada(
+            valor_original=texto,
+            data_evento=data_evento,
+            hora_evento=None,
+            timestamp_evento=None,
+            precisao=PrecisaoTemporal.SOMENTE_DATA_CONFIAVEL,
+            ano_corrigido=ano_corrigido,
+            horario_informado=False,
+            motivo_qualidade=(
+                "ANO_0025_CORRIGIDO_SEM_HORARIO"
+                if ano_corrigido
+                else "CAMPO_SEM_HORARIO"
+            ),
+        )
+
+    hora_evento = time(
+        hour=int(match.group("hora")),
+        minute=int(match.group("minuto")),
+        second=int(match.group("segundo")),
+    )
+
+    horario_zerado = hora_evento == time(0, 0, 0)
+
+    if horario_zerado and horario_zerado_representa_ausencia:
+        logger.info(
+            "Data corrigida e horário zerado tratado como não informado",
+            extra={
+                "origem": origem.value,
+                "valor_original": texto,
+                "data_normalizada": data_evento.isoformat(),
+                "ano_corrigido": ano_corrigido,
+            },
+        )
+        return DataNormalizada(
+            valor_original=texto,
+            data_evento=data_evento,
+            hora_evento=None,
+            timestamp_evento=None,
+            precisao=PrecisaoTemporal.SOMENTE_DATA_CONFIAVEL,
+            ano_corrigido=ano_corrigido,
+            horario_informado=False,
+            motivo_qualidade="HORARIO_000000_NAO_INFORMADO",
+        )
+
+    timestamp_evento = datetime.combine(data_evento, hora_evento)
+
+    return DataNormalizada(
+        valor_original=texto,
+        data_evento=data_evento,
+        hora_evento=hora_evento,
+        timestamp_evento=timestamp_evento,
+        precisao=PrecisaoTemporal.DATA_HORA_CONFIAVEL,
+        ano_corrigido=ano_corrigido,
+        horario_informado=True,
+        motivo_qualidade=(
+            "ANO_0025_CORRIGIDO"
+            if ano_corrigido
+            else None
+        ),
+    )
+
+Uso para os campos conhecidos do ME
+resultado = normalizar_data_operacional(
+    valor="0025-12-31 00:00:00",
+    origem=OrigemArquivo.ME_DATA,
+    horario_zerado_representa_ausencia=True,
+)
+
+assert resultado.data_evento == date(2025, 12, 31)
+assert resultado.hora_evento is None
+assert resultado.timestamp_evento is None
+assert resultado.ano_corrigido is True
+assert resultado.horario_informado is False
+assert resultado.precisao == PrecisaoTemporal.SOMENTE_DATA_CONFIAVEL
+
+Uso para o relatório de assistências
+resultado = normalizar_data_operacional(
+    valor="2026-08-31 02:17:43",
+    origem=OrigemArquivo.RELATORIO_ASSISTENCIAS,
+    horario_zerado_representa_ausencia=False,
+)
+
+assert resultado.data_evento == date(2026, 8, 31)
+assert resultado.hora_evento == time(2, 17, 43)
+assert resultado.timestamp_evento == datetime(2026, 8, 31, 2, 17, 43)
+assert resultado.horario_informado is True
+assert resultado.precisao == PrecisaoTemporal.DATA_HORA_CONFIAVEL
+
+Motivo da alteração
+Recuperar corretamente o ano.
+Preservar a data útil.
+Não fabricar horário.
+Evitar falsa ocorrência à meia-noite.
+Permitir análise diária sem permitir análise horária.
+Manter rastreabilidade do valor original.
+Riscos da alteração
+Aplicar a correção em colunas que não sejam datas.
+Considerar todo 00:00:00 como ausente, inclusive em fontes confiáveis.
+Preencher a coluna legada de timestamp sem indicar que o horário é desconhecido.
+Quebrar consultas existentes que esperem exclusivamente datetime.
+Misturar data de abertura, expediente, serviço e movimento.
+
+Por isso, a mudança precisa ser feita no adaptador de ingestão e acompanhada por testes de regressão.
+
+6. Possíveis melhorias futuras
+Testes obrigatórios
+def test_corrige_ano_e_remove_horario_tecnico() -> None:
+    resultado = normalizar_data_operacional(
+        "0025-12-31 00:00:00",
+        OrigemArquivo.ME_DATA,
+        horario_zerado_representa_ausencia=True,
+    )
+
+    assert resultado.data_evento == date(2025, 12, 31)
+    assert resultado.hora_evento is None
+    assert resultado.timestamp_evento is None
+    assert resultado.ano_corrigido is True
+    assert resultado.horario_informado is False
+
+
+def test_preserva_horario_real_do_relatorio() -> None:
+    resultado = normalizar_data_operacional(
+        "2026-08-31 03:25:17",
+        OrigemArquivo.RELATORIO_ASSISTENCIAS,
+    )
+
+    assert resultado.timestamp_evento == datetime(
+        2026, 8, 31, 3, 25, 17
+    )
+    assert resultado.horario_informado is True
+
+
+def test_nao_fabrica_horario_em_data_sem_hora() -> None:
+    resultado = normalizar_data_operacional(
+        "0025-12-31",
+        OrigemArquivo.ME_DATA,
+    )
+
+    assert resultado.data_evento == date(2025, 12, 31)
+    assert resultado.hora_evento is None
+    assert resultado.timestamp_evento is None
+
+
+def test_rejeita_data_calendario_invalida() -> None:
+    resultado = normalizar_data_operacional(
+        "0025-02-31 00:00:00",
+        OrigemArquivo.ME_DATA,
+        horario_zerado_representa_ausencia=True,
+    )
+
+    assert resultado.data_evento is None
+    assert resultado.precisao == PrecisaoTemporal.DATA_INVALIDA
+
+Regra final consolidada
+"0025-12-31 00:00:00"
+
+Ano 0025:
+    corrigir para 2025
+
+Data 31/12/2025:
+    válida e utilizável
+
+Horário 00:00:00:
+    ausente/não informado no contexto desses campos do ME
+
+Análise diária:
+    permitida
+
+Análise horária ou de madrugada:
+    proibida
+
+Valor original:
+    preservado para auditoria
+
+
+A correção principal é esta: a data não deve ser descartada; somente a precisão horária deve ser removida.
