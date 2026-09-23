@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>LCFO Grafo Bidirecional</title>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        html, body { background: #06090F; overflow: hidden; width: 100%; height: 100%; position: relative; }
+        #network { width: 100%; height: 100%; background-color: #06090F; }
+
+        /* TOP DOCK CENTRAL: só o filtro (icones de troca de aba foram removidos
+           porque st.tabs() não permite ser controlado por session_state --
+           deixá-los ali seria um botão que parece funcionar mas não faz nada) */
+        .top-dock {
+            position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: rgba(11, 17, 30, 0.92);
+            border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px); box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+        }
+        .dock-btn {
+            background: transparent; border: none; color: #94A3B8; width: 34px; height: 32px;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .dock-btn:hover { background: #1E293B; color: #F8FAFC; }
+        .dock-btn.active { background: #0284C7; color: #FFFFFF; }
+
+        .filter-popover {
+            position: absolute; top: 54px; left: 50%; transform: translateX(-50%); z-index: 40;
+            width: 260px; background: rgba(14, 23, 38, 0.96); border: 1px solid rgba(51, 65, 85, 0.7);
+            border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.7);
+            backdrop-filter: blur(16px); color: #F8FAFC;
+        }
+        .popover-title { font-size: 13px; font-weight: 700; color: #F8FAFC; margin-bottom: 4px; }
+        .popover-subtitle { font-size: 11px; color: #94A3B8; margin-bottom: 10px; }
+        .popover-options { display: flex; flex-direction: column; gap: 8px; }
+        .flow-checkbox { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+        .flow-checkbox input { accent-color: #EA580C; cursor: pointer; width: 14px; height: 14px; }
+
+        .top-right-controls {
+            position: absolute; top: 12px; right: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 6px; background: rgba(11, 17, 30, 0.92);
+            border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px);
+        }
+        .tr-btn {
+            background: transparent; border: none; color: #94A3B8; width: 32px; height: 30px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none; position: relative;
+        }
+        .tr-btn:hover { background: #1E293B; color: #F8FAFC; }
+        .cloud-status { color: #10B981; padding: 4px 6px; display: flex; align-items: center; cursor: default; }
+
+        .export-menu {
+            position: absolute; top: 40px; right: 0; width: 150px; background: #0E1726;
+            border: 1px solid #334155; border-radius: 6px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+            display: flex; flex-direction: column; gap: 2px; z-index: 50;
+        }
+        .export-item { padding: 6px 10px; font-size: 11px; color: #E2E8F0; cursor: pointer; border-radius: 4px; }
+        .export-item:hover { background: #0284C7; color: #FFFFFF; }
+
+        .bottom-left-controls {
+            position: absolute; bottom: 14px; left: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: rgba(11, 17, 30, 0.92);
+            border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px);
+        }
+        .bl-btn {
+            background: transparent; border: none; color: #94A3B8; width: 32px; height: 30px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .bl-btn:hover { background: #1E293B; color: #38BDF8; }
+
+        .left-rail {
+            position: absolute; top: 60px; left: 14px; z-index: 25;
+            display: flex; flex-direction: column; gap: 4px; background: rgba(11, 17, 30, 0.92);
+            border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 8px; padding: 6px 4px;
+            backdrop-filter: blur(14px);
+        }
+        .rail-btn {
+            background: transparent; border: none; color: #94A3B8; width: 34px; height: 32px;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .rail-btn:hover { background: #1E293B; color: #38BDF8; }
+        .rail-btn.active { background: #0F2A3D; color: #38BDF8; border: 1px solid rgba(56, 189, 248, 0.4); }
+        .rail-separator { width: 22px; height: 1px; background: rgba(51, 65, 85, 0.5); margin: 3px auto; }
+
+        .search-panel {
+            position: absolute; top: 118px; left: 14px; z-index: 25; width: 220px;
+            background: rgba(11, 17, 30, 0.90); border: 1px solid rgba(51, 65, 85, 0.7);
+            border-radius: 6px; padding: 6px; backdrop-filter: blur(12px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        }
+        .search-input-wrap { position: relative; display: flex; align-items: center; }
+        .search-panel input {
+            width: 100%; background: #1E293B; border: 1px solid #334155; color: #F8FAFC;
+            padding: 6px 24px 6px 8px; border-radius: 4px; font-size: 11px; outline: none;
+        }
+        .search-panel input:focus { border-color: #38BDF8; }
+        .search-clear-btn {
+            position: absolute; right: 6px; background: transparent; border: none;
+            color: #94A3B8; cursor: pointer; font-size: 14px; display: none; line-height: 1;
+        }
+        .search-results {
+            overflow-y: auto; max-height: 220px; display: flex; flex-direction: column;
+            gap: 4px; margin-top: 6px; padding-top: 4px; border-top: 1px solid rgba(51, 65, 85, 0.4);
+        }
+        .search-result-item {
+            background: rgba(14, 23, 38, 0.9); border: 1px solid #1E293B; padding: 6px 8px;
+            border-radius: 4px; font-size: 11px; color: #E2E8F0; cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: 0.15s;
+        }
+        .search-result-item:hover { border-color: #38BDF8; background: #1E293B; color: #38BDF8; }
+
+        .context-menu {
+            position: absolute; display: none; z-index: 100;
+            background: rgba(11, 17, 30, 0.96); border: 1px solid #334155; border-radius: 6px;
+            padding: 4px; min-width: 190px; box-shadow: 0 8px 24px rgba(0,0,0,0.7);
+            backdrop-filter: blur(16px);
+        }
+        .context-menu-header {
+            padding: 6px 10px 4px 10px; font-size: 10px; font-weight: 700; color: #94A3B8;
+            text-transform: uppercase; border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+            margin-bottom: 4px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;
+        }
+        .context-menu-item {
+            padding: 7px 10px; font-size: 11px; color: #F8FAFC; cursor: pointer;
+            border-radius: 4px; transition: 0.12s; font-weight: 600;
+        }
+        .context-menu-item:hover { background: #0284C7; color: #FFFFFF; }
+        .context-menu-item.enrich { color: #FBBF24; }
+        .context-menu-item.enrich:hover { background: #92400E; color: #FFF7ED; }
+
+        .minimap-container {
+            position: absolute; bottom: 14px; right: 14px; z-index: 20;
+            background: rgba(11, 17, 30, 0.85); border: 1px solid rgba(245, 158, 11, 0.5);
+            border-radius: 6px; padding: 4px; backdrop-filter: blur(10px); pointer-events: none;
+        }
+        #minimap-canvas { display: block; border-radius: 3px; background: rgba(6, 9, 15, 0.8); }
+
+        .drawer {
+            position: absolute; top: 0; right: 0; width: 370px;
+            height: calc(100% - 140px);
+            background: rgba(11, 17, 30, 0.92); border-left: 1px solid rgba(51, 65, 85, 0.6);
+            border-bottom: 1px solid rgba(51, 65, 85, 0.6); border-bottom-left-radius: 8px;
+            box-shadow: -10px 0 30px rgba(0, 0, 0, 0.7); backdrop-filter: blur(16px);
+            z-index: 50; display: flex; flex-direction: column;
+            transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            color: #F8FAFC;
+        }
+        .drawer.open { transform: translateX(0); }
+        .drawer-resize-handle {
+            position: absolute; left: -4px; top: 0; width: 8px; height: 100%;
+            cursor: ew-resize; z-index: 60; background: transparent; transition: background 0.15s;
+        }
+        .drawer-resize-handle:hover, .drawer-resize-handle.resizing { background: rgba(56, 189, 248, 0.4); }
+        .drawer-resize-handle-v {
+            position: absolute; left: 0; bottom: -4px; width: 100%; height: 8px;
+            cursor: ns-resize; z-index: 60; background: transparent; transition: background 0.15s;
+        }
+        .drawer-resize-handle-v:hover, .drawer-resize-handle-v.resizing { background: rgba(56, 189, 248, 0.4); }
+        .drawer-header {
+            padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.6); background: rgba(14, 23, 38, 0.7);
+        }
+        .drawer-close-btn {
+            background: transparent; border: none; color: #94A3B8; font-size: 20px;
+            cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 4px;
+        }
+        .drawer-close-btn:hover { color: #F8FAFC; background: #1E293B; }
+        .enrich-cta-btn {
+            margin: 12px 16px 6px 16px; background: #92400E; border: 1px solid #F59E0B;
+            color: #FFF7ED; padding: 8px 12px; border-radius: 6px; font-weight: 700;
+            font-size: 11px; display: flex; align-items: center; justify-content: center;
+            gap: 8px; cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .enrich-cta-btn:hover { background: #B45309; border-color: #FBBF24; }
+        .drawer-body { padding: 14px 16px; overflow-y: auto; flex: 1; }
+        .drawer-section {
+            background: rgba(11, 17, 30, 0.7); border: 1px solid rgba(51, 65, 85, 0.5);
+            border-radius: 6px; padding: 10px 12px;
+        }
+        .drawer-field {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.5); font-size: 12px;
+        }
+        .drawer-field:last-child { border-bottom: none; }
+        .field-label { color: #94A3B8; }
+        .field-value { color: #F8FAFC; font-weight: 600; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .neighbors-preview { display: block; margin: 10px auto; border-radius: 4px; background: rgba(6, 9, 15, 0.6); }
+    </style>
+</head>
+<body>
+    <div class="top-dock">
+        <button class="dock-btn active" id="btn-dock-filter" onclick="toggleFilterPopover()" title="Filtrar Tipos de Entidade">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+    </div>
+
+    <div id="filter-popover" class="filter-popover" style="display:none;">
+        <div class="popover-title">Filtros</div>
+        <div class="popover-subtitle">Filtrar por tipo de entidade</div>
+        <div class="popover-options">
+            <label class="flow-checkbox"><input type="checkbox" id="flt-cpf" checked onchange="aplicarFiltroTipo()"> <span>titular (cpf)</span></label>
+            <label class="flow-checkbox"><input type="checkbox" id="flt-telefone" checked onchange="aplicarFiltroTipo()"> <span>telefone</span></label>
+            <label class="flow-checkbox"><input type="checkbox" id="flt-placa" checked onchange="aplicarFiltroTipo()"> <span>placa</span></label>
+            <label class="flow-checkbox"><input type="checkbox" id="flt-empresa" checked onchange="aplicarFiltroTipo()"> <span>seguradora</span></label>
+        </div>
+    </div>
+
+    <div class="top-right-controls">
+        <div class="cloud-status" title="Alterações salvas na sessão">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+        </div>
+        <div style="position:relative;">
+            <button class="tr-btn" onclick="toggleExportMenu()" title="Exportar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+            <div id="export-menu" class="export-menu" style="display:none;">
+                <div class="export-item" onclick="exportJSON()">Exportar como JSON</div>
+                <div class="export-item" onclick="exportPNG()">Exportar como PNG</div>
+            </div>
+        </div>
+        <button class="tr-btn" onclick="resetarOuRecalcularLayout()" title="Recalcular Layout (avisa o Python)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+    </div>
+
+    <div class="left-rail">
+        <button class="rail-btn" onclick="limparSelecaoMultipla()" title="Limpar Seleção / Rastro">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </button>
+        <button class="rail-btn" onclick="executarFindPath()" title="Rastrear Elo entre 2 Nós (Find Path)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v2"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-search" onclick="toggleSearchPanel()" title="Buscar Entidade">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button class="rail-btn active" id="rail-lod" onclick="toggleAdaptive()" title="LOD Adaptativo (liga/desliga)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <div class="rail-separator"></div>
+        <button class="rail-btn active" id="rail-organico" onclick="changeLayout('organico')" title="Força Orgânica">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M12 9V5m0 14v-4m-3-3H5m14 0h-4"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-arvore" onclick="changeLayout('arvore')" title="Hierarquia (Árvore)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="4" rx="1"/><rect x="4" y="17" width="6" height="4" rx="1"/><rect x="14" y="17" width="6" height="4" rx="1"/><path d="M12 7v5m-5 5v-2a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v2"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-pontes" onclick="changeLayout('pontes')" title="Pontes & Gargalos">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="12" x2="20" y2="12"/><circle cx="12" cy="12" r="4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-comunidades" onclick="changeLayout('comunidades')" title="Comunidades Modulares">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </button>
+    </div>
+
+    <div id="search-panel" class="search-panel" style="display:none;">
+        <div class="search-input-wrap">
+            <input type="text" id="search-input" placeholder="Filtrar no grafo..." oninput="filtrarListaBusca(this.value)">
+            <button id="search-clear-btn" class="search-clear-btn" onclick="limparBuscaGrafo()">&times;</button>
+        </div>
+        <div id="search-results" class="search-results" style="display:none;"></div>
+    </div>
+
+    <div class="bottom-left-controls">
+        <button class="bl-btn" onclick="zoomIn()" title="Zoom In">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="zoomOut()" title="Zoom Out">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="fitView()" title="Enquadrar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+        <button class="bl-btn" onclick="zoomToSelection()" title="Zoom para Seleção">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3"/></svg>
+        </button>
+    </div>
+
+    <div id="minimap-container" class="minimap-container">
+        <canvas id="minimap-canvas" width="160" height="110"></canvas>
+    </div>
+
+    <div id="context-menu" class="context-menu">
+        <div class="context-menu-header" id="ctx-node-title">Entidade</div>
+        <div class="context-menu-item" onclick="ctxCopiarDado()">Copiar Identificador</div>
+        <div class="context-menu-item" onclick="ctxCentralizar()">Focar no Canvas</div>
+        <div class="context-menu-item" onclick="ctxIsolar()">Isolar Vizinhança</div>
+        <div class="context-menu-item" onclick="ctxAbrirDrawer()">Inspecionar Atributos</div>
+        <div class="context-menu-item enrich" onclick="ctxEnrich()">Enriquecer Vínculos (Enrich)</div>
+    </div>
+
+    <div id="network"></div>
+
+    <div id="inspector-drawer" class="drawer">
+        <div id="drawer-resize-handle" class="drawer-resize-handle" title="Arraste para ajustar largura"></div>
+        <div id="drawer-resize-handle-v" class="drawer-resize-handle-v" title="Arraste para ajustar altura"></div>
+        <div class="drawer-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span id="drawer-badge" style="font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; text-transform:uppercase;">ENTIDADE</span>
+                <span id="drawer-title" style="font-weight:700; font-size:13px; color:#F8FAFC; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:200px;"></span>
+            </div>
+            <button class="drawer-close-btn" onclick="closeDrawer()">&times;</button>
+        </div>
+        <button class="enrich-cta-btn" onclick="dispararEnrich()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            ENRICH (EXPANDIR VÍNCULOS)
+        </button>
+        <div class="drawer-body">
+            <div class="drawer-section">
+                <div class="drawer-field">
+                    <span class="field-label">Identificador:</span>
+                    <span id="drawer-val" class="field-value"></span>
+                </div>
+                <div class="drawer-field" id="drawer-row-nome" style="display:none;">
+                    <span class="field-label">Nome:</span>
+                    <span id="drawer-nome" class="field-value"></span>
+                </div>
+                <div class="drawer-field">
+                    <span class="field-label">Conexões:</span>
+                    <span id="drawer-degree" class="field-value"></span>
+                </div>
+                <div class="drawer-field">
+                    <span class="field-label">Intermediação:</span>
+                    <span id="drawer-betweenness" class="field-value"></span>
+                </div>
+                <div class="drawer-field">
+                    <span class="field-label">Comunidade:</span>
+                    <span id="drawer-community" class="field-value"></span>
+                </div>
+            </div>
+
+            <div class="neighbors-container" style="margin-top:14px;">
+                <div style="font-size:11px; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:8px; display:flex; justify-content:space-between;">
+                    <span>Entidades Vinculadas</span>
+                    <span id="drawer-neighbors-count" style="color:#38BDF8;">0</span>
+                </div>
+                <canvas id="drawer-neighbors-preview" class="neighbors-preview" width="240" height="120"></canvas>
+                <div id="drawer-neighbors-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function sendValueToStreamlit(value) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:setComponentValue",
+                value: value,
+                dataType: "json"
+            }, "*");
+        }
+        function setFrameHeightStreamlit(height) {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }, "*");
+        }
+        function notifyReadyStreamlit() {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+        }
+
+        let rawNodes = [];
+        let rawEdges = [];
+        let masterHubId = "";
+        let targetSearchId = "";
+        let initialLayout = "organico";
+        let baseFontSize = 11;
+        let alturaComponente = 740;
+        let assinaturaDadosAtual = "";
+
+        let network = null;
+        const nodesDataSet = new vis.DataSet([]);
+        const edgesDataSet = new vis.DataSet([]);
+        let nodeIndexMap = new Map();
+        let adjacencyMap = new Map();
+        let adjacencySimples = new Map();
+        let selectedNodesQueue = [];
+
+        let isAdaptive = true;
+        let zoomTimeout = null;
+        let currentHighlightId = null;
+        let currentInspectedNodeId = null;
+        let contextMenuNodeId = null;
+
+        const container = document.getElementById('network');
+
+        function toggleFilterPopover() {
+            const p = document.getElementById('filter-popover');
+            p.style.display = p.style.display === "none" ? "block" : "none";
+        }
+        function toggleExportMenu() {
+            const m = document.getElementById('export-menu');
+            m.style.display = m.style.display === "none" ? "flex" : "none";
+        }
+        function toggleSearchPanel() {
+            const p = document.getElementById('search-panel');
+            const visivel = p.style.display !== "none";
+            p.style.display = visivel ? "none" : "block";
+            document.getElementById('rail-search').classList.toggle('active', !visivel);
+        }
+
+        function exportJSON() {
+            toggleExportMenu();
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ nodes: rawNodes, edges: rawEdges }, null, 2));
+            const a = document.createElement('a');
+            a.href = dataStr;
+            a.download = 'investigacao_grafo.json';
+            a.click();
+        }
+        function exportPNG() {
+            toggleExportMenu();
+            const canvas = container.querySelector('canvas');
+            const a = document.createElement('a');
+            a.download = 'evidencia_lcfo.png';
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+        }
+        function resetarOuRecalcularLayout() {
+            sendValueToStreamlit({ tipo: "reset_layout_request" });
+        }
+
+        function zoomIn() { if (network) network.moveTo({ scale: network.getScale() * 1.25, animation: { duration: 250 } }); }
+        function zoomOut() { if (network) network.moveTo({ scale: network.getScale() * 0.8, animation: { duration: 250 } }); }
+        function fitView() { if (network) network.fit({ animation: { duration: 350 }, padding: 60 }); }
+        function zoomToSelection() {
+            if (currentInspectedNodeId && network) network.focus(currentInspectedNodeId, { scale: 1.15, animation: { duration: 350 } });
+            else fitView();
+        }
+
+        function aplicarFiltroTipo() {
+            const permitidos = new Set();
+            if (document.getElementById('flt-cpf').checked) permitidos.add('cpf');
+            if (document.getElementById('flt-telefone').checked) permitidos.add('telefone');
+            if (document.getElementById('flt-placa').checked) permitidos.add('placa');
+            if (document.getElementById('flt-empresa').checked) permitidos.add('empresa');
+            const nodeUpdates = [];
+            nodesDataSet.forEach(node => nodeUpdates.push({ id: node.id, hidden: !permitidos.has(node.tipo) }));
+            nodesDataSet.update(nodeUpdates);
+        }
+
+        function dispararEnrich() {
+            if (!currentInspectedNodeId) return;
+            const nodeObj = nodeIndexMap.get(currentInspectedNodeId);
+            if (!nodeObj) return;
+            sendValueToStreamlit({ tipo: "enrich_request", nodeId: currentInspectedNodeId, tipoEntidade: nodeObj.tipo, valor: nodeObj.valor });
+        }
+
+        function applyHighlight(selectedId) {
+            currentHighlightId = selectedId;
+            if (!network) return;
+            if (selectedId && nodesDataSet.get(selectedId)) {
+                const connected = network.getConnectedNodes(selectedId);
+                connected.push(selectedId);
+                const updates = [];
+                nodesDataSet.forEach(node => {
+                    updates.push({ id: node.id, opacity: connected.includes(node.id) ? 1.0 : 0.12, borderWidth: (node.id === selectedId ? 3.5 : 1.2) });
+                });
+                nodesDataSet.update(updates);
+            } else {
+                const updates = [];
+                nodesDataSet.forEach(node => updates.push({ id: node.id, opacity: 1.0, borderWidth: (node.id === masterHubId ? 3 : 1.2) }));
+                nodesDataSet.update(updates);
+            }
+        }
+
+        function executarFindPath() {
+            if (selectedNodesQueue.length < 2) { alert("Selecione 2 nós no grafo para traçar o menor caminho relacional (Find Path)."); return; }
+            const startNode = selectedNodesQueue[selectedNodesQueue.length - 2];
+            const endNode = selectedNodesQueue[selectedNodesQueue.length - 1];
+            const queue = [[startNode]];
+            const visited = new Set([startNode]);
+            let foundPath = null;
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const node = path[path.length - 1];
+                if (node === endNode) { foundPath = path; break; }
+                (adjacencySimples.get(node) || []).forEach(nextNode => {
+                    if (!visited.has(nextNode)) { visited.add(nextNode); queue.push([...path, nextNode]); }
+                });
+            }
+            if (!foundPath) { alert("Nenhum caminho direto conectando os nós selecionados na teia atual."); return; }
+            const pathSet = new Set(foundPath);
+            const updates = [];
+            nodesDataSet.forEach(node => {
+                const isInPath = pathSet.has(node.id);
+                updates.push({ id: node.id, opacity: isInPath ? 1.0 : 0.10, borderWidth: isInPath ? 3.5 : 1.0 });
+            });
+            nodesDataSet.update(updates);
+        }
+
+        function limparSelecaoMultipla() { selectedNodesQueue = []; applyHighlight(null); closeDrawer(); }
+
+        function getLocalHub(comp, edges) {
+            if (comp.length <= 1) return comp[0];
+            const nodeIds = new Set(comp.map(n => n.id));
+            const degrees = {};
+            comp.forEach(n => degrees[n.id] = 0);
+            edges.forEach(e => {
+                if (nodeIds.has(e.from) && nodeIds.has(e.to)) {
+                    degrees[e.from] = (degrees[e.from] || 0) + 1;
+                    degrees[e.to] = (degrees[e.to] || 0) + 1;
+                }
+            });
+            let maxDeg = -1, best = comp[0];
+            comp.forEach(n => { if (degrees[n.id] > maxDeg) { maxDeg = degrees[n.id]; best = n; } });
+            return best;
+        }
+
+        function obterLimitesVisiveis() {
+            if (!network) return null;
+            const canvasEl = container.querySelector('canvas');
+            if (!canvasEl) return null;
+            const topLeft = network.DOMtoCanvas({ x: 0, y: 0 });
+            const bottomRight = network.DOMtoCanvas({ x: canvasEl.clientWidth, y: canvasEl.clientHeight });
+            return { minX: topLeft.x, minY: topLeft.y, maxX: bottomRight.x, maxY: bottomRight.y };
+        }
+        function desenharGridPontilhado(ctx) {
+            const limites = obterLimitesVisiveis();
+            if (!limites) return;
+            const espacamentoGrid = 42;
+            if (((limites.maxX - limites.minX) / espacamentoGrid) * ((limites.maxY - limites.minY) / espacamentoGrid) > 6000) return;
+            const startX = Math.floor(limites.minX / espacamentoGrid) * espacamentoGrid;
+            const startY = Math.floor(limites.minY / espacamentoGrid) * espacamentoGrid;
+            ctx.save();
+            ctx.fillStyle = "rgba(148, 163, 184, 0.16)";
+            for (let x = startX; x <= limites.maxX; x += espacamentoGrid) {
+                for (let y = startY; y <= limites.maxY; y += espacamentoGrid) { ctx.beginPath(); ctx.arc(x, y, 1.3, 0, 2 * Math.PI); ctx.fill(); }
+            }
+            ctx.restore();
+        }
+
+        function desenharMinimapa() {
+            const canvas = document.getElementById('minimap-canvas');
+            if (!canvas || !network) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const positions = network.getPositions();
+            const ids = Object.keys(positions);
+            if (ids.length === 0) return;
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            ids.forEach(id => { const p = positions[id]; if (p) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); } });
+            const rangeX = Math.max(maxX - minX, 1), rangeY = Math.max(maxY - minY, 1), pad = 8;
+            function toMini(x, y) { return [pad + ((x - minX) / rangeX) * (canvas.width - 2 * pad), pad + ((y - minY) / rangeY) * (canvas.height - 2 * pad)]; }
+            ids.forEach(id => {
+                const p = positions[id];
+                if (!p) return;
+                const [mx, my] = toMini(p.x, p.y);
+                const nodeObj = nodeIndexMap.get(id);
+                ctx.fillStyle = (id === masterHubId) ? "#FBBF24" : (nodeObj && nodeObj.color ? nodeObj.color.background : "#38BDF8");
+                ctx.beginPath(); ctx.arc(mx, my, (id === masterHubId ? 2.5 : 1.5), 0, 2 * Math.PI); ctx.fill();
+            });
+        }
+
+        function filtrarListaBusca(termo) {
+            const resultsEl = document.getElementById('search-results');
+            const clearBtn = document.getElementById('search-clear-btn');
+            if (!termo || termo.trim().length < 2) { resultsEl.style.display = "none"; resultsEl.innerHTML = ""; clearBtn.style.display = "none"; return; }
+            clearBtn.style.display = "block";
+            const termoClean = termo.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+            const encontrados = rawNodes.filter(n => {
+                const vClean = (n.valor || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                const lClean = (n.label || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                const nClean = (n.nome_titular || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                return vClean.includes(termoClean) || lClean.includes(termoClean) || nClean.includes(termoClean);
+            }).slice(0, 25);
+            resultsEl.innerHTML = "";
+            if (encontrados.length === 0) {
+                resultsEl.innerHTML = "<div style='color:#94A3B8; font-size:11px; padding:4px;'>Nenhum registro localizado.</div>";
+            } else {
+                encontrados.forEach(n => {
+                    const item = document.createElement('div');
+                    item.className = 'search-result-item';
+                    item.innerText = n.label;
+                    item.onclick = function() { selectInspectedNode(n.id); };
+                    resultsEl.appendChild(item);
+                });
+            }
+            resultsEl.style.display = "flex";
+        }
+        function limparBuscaGrafo() { document.getElementById('search-input').value = ""; filtrarListaBusca(""); }
+
+        function handleContextMenu(params) {
+            params.event.preventDefault();
+            const nodeId = network.getNodeAt(params.pointer.DOM);
+            const menu = document.getElementById('context-menu');
+            if (!nodeId) { menu.style.display = "none"; return; }
+            contextMenuNodeId = nodeId;
+            const nodeObj = nodeIndexMap.get(nodeId);
+            document.getElementById('ctx-node-title').innerText = nodeObj ? nodeObj.label : "Entidade";
+            let posX = params.pointer.DOM.x + 8, posY = params.pointer.DOM.y + 8;
+            if (posX + 200 > container.clientWidth) posX = params.pointer.DOM.x - 200;
+            if (posY + 190 > container.clientHeight) posY = params.pointer.DOM.y - 180;
+            menu.style.left = posX + "px"; menu.style.top = posY + "px"; menu.style.display = "block";
+        }
+        function hideContextMenu() { const menu = document.getElementById('context-menu'); if (menu) menu.style.display = "none"; }
+        function ctxCopiarDado() {
+            if (!contextMenuNodeId) return;
+            const nodeObj = nodeIndexMap.get(contextMenuNodeId);
+            if (nodeObj) navigator.clipboard.writeText(nodeObj.valor || nodeObj.id);
+            hideContextMenu();
+        }
+        function ctxCentralizar() { if (contextMenuNodeId) network.focus(contextMenuNodeId, { scale: 1.15, animation: { duration: 350 } }); hideContextMenu(); }
+        function ctxIsolar() { if (contextMenuNodeId) applyHighlight(contextMenuNodeId); hideContextMenu(); }
+        function ctxAbrirDrawer() { if (contextMenuNodeId) { openInspector(contextMenuNodeId); applyHighlight(contextMenuNodeId); } hideContextMenu(); }
+        function ctxEnrich() { if (contextMenuNodeId) { currentInspectedNodeId = contextMenuNodeId; dispararEnrich(); } hideContextMenu(); }
+
+        function desenharNeighborsPreview(nodeId, connected) {
+            const canvas = document.getElementById('drawer-neighbors-preview');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!connected || connected.length === 0) return;
+            const cx = canvas.width / 2, cy = canvas.height / 2;
+            const exibicao = connected.slice(0, 32);
+            const raio = Math.min(48, 22 + exibicao.length * 1.1);
+            ctx.strokeStyle = "rgba(148, 163, 184, 0.25)"; ctx.lineWidth = 1;
+            const posicoes = [];
+            exibicao.forEach((item, i) => {
+                const ang = (2 * Math.PI * i) / exibicao.length;
+                const px = cx + raio * Math.cos(ang), py = cy + raio * Math.sin(ang);
+                posicoes.push([px, py]);
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.stroke();
+            });
+            exibicao.forEach((item, i) => {
+                const nObj = nodeIndexMap.get(item.id);
+                const [px, py] = posicoes[i];
+                ctx.beginPath(); ctx.arc(px, py, 4, 0, 2 * Math.PI);
+                ctx.fillStyle = nObj && nObj.color ? nObj.color.background : "#38BDF8"; ctx.fill();
+            });
+            const centerObj = nodeIndexMap.get(nodeId);
+            ctx.beginPath(); ctx.arc(cx, cy, 7, 0, 2 * Math.PI);
+            ctx.fillStyle = centerObj && centerObj.color ? centerObj.color.background : "#38BDF8"; ctx.fill();
+            ctx.strokeStyle = "#FBBF24"; ctx.lineWidth = 1.6; ctx.stroke();
+        }
+
+        function openInspector(nodeId) {
+            const nodeObj = nodeIndexMap.get(nodeId);
+            if (!nodeObj) return;
+            currentInspectedNodeId = nodeId;
+            const drawer = document.getElementById('inspector-drawer');
+            const badge = document.getElementById('drawer-badge');
+            const rowNome = document.getElementById('drawer-row-nome');
+            badge.innerText = (nodeObj.tipo || "ENTIDADE").toUpperCase();
+            badge.style.background = nodeObj.color ? nodeObj.color.background : "#0369A1";
+            badge.style.color = "#FFFFFF";
+            document.getElementById('drawer-title').innerText = nodeObj.label;
+            document.getElementById('drawer-val').innerText = nodeObj.valor || nodeObj.id;
+            document.getElementById('drawer-degree').innerText = `${nodeObj.degree || 1} conexão(ões)`;
+            document.getElementById('drawer-betweenness').innerText = nodeObj.betweenness !== undefined ? `${nodeObj.betweenness}` : '0.0';
+            document.getElementById('drawer-community').innerText = nodeObj.community !== undefined ? `Grupo #${nodeObj.community}` : 'Principal';
+            if (nodeObj.tipo === "cpf" && nodeObj.nome_titular) { rowNome.style.display = "flex"; document.getElementById('drawer-nome').innerText = nodeObj.nome_titular; }
+            else { rowNome.style.display = "none"; }
+            const vizinhos = adjacencyMap.get(nodeId) || [];
+            document.getElementById('drawer-neighbors-count').innerText = vizinhos.length;
+            desenharNeighborsPreview(nodeId, vizinhos);
+            const listEl = document.getElementById('drawer-neighbors-list');
+            listEl.innerHTML = "";
+            vizinhos.slice(0, 30).forEach(nb => {
+                const nbObj = nodeIndexMap.get(nb.id);
+                if (!nbObj) return;
+                const item = document.createElement('div');
+                item.style.cssText = "background:#1E293B; padding:6px 8px; border-radius:4px; font-size:11px; cursor:pointer;";
+                item.innerText = `${nbObj.label} (${nb.title})`;
+                item.onclick = function() { selectInspectedNode(nb.id); };
+                listEl.appendChild(item);
+            });
+            drawer.classList.add('open');
+        }
+        function closeDrawer() { document.getElementById('inspector-drawer').classList.remove('open'); currentInspectedNodeId = null; }
+        function selectInspectedNode(nodeId) { openInspector(nodeId); applyHighlight(nodeId); if (network) network.focus(nodeId, { scale: 1.15, animation: { duration: 350 } }); }
+
+        function initDrawerResize() {
+            const handleH = document.getElementById('drawer-resize-handle');
+            const handleV = document.getElementById('drawer-resize-handle-v');
+            const drawer = document.getElementById('inspector-drawer');
+            let resizingH = false, resizingV = false;
+            handleH.addEventListener('mousedown', function(e) { resizingH = true; handleH.classList.add('resizing'); document.body.style.userSelect = 'none'; e.preventDefault(); });
+            handleV.addEventListener('mousedown', function(e) { resizingV = true; handleV.classList.add('resizing'); document.body.style.userSelect = 'none'; e.preventDefault(); });
+            document.addEventListener('mousemove', function(e) {
+                if (resizingH) drawer.style.width = Math.min(640, Math.max(300, window.innerWidth - e.clientX)) + "px";
+                if (resizingV) drawer.style.height = Math.min(window.innerHeight, Math.max(220, e.clientY)) + "px";
+            });
+            document.addEventListener('mouseup', function() {
+                if (resizingH) { resizingH = false; handleH.classList.remove('resizing'); }
+                if (resizingV) { resizingV = false; handleV.classList.remove('resizing'); }
+                document.body.style.userSelect = '';
+            });
+        }
+
+        function updateAdaptiveLOD() {
+            if (!isAdaptive || !network) return;
+            const scale = network.getScale();
+            if (!scale || scale <= 0.05) return;
+            const targetFont = Math.max(9, Math.min(20, Math.round(baseFontSize / Math.sqrt(scale))));
+            const updates = [];
+            nodesDataSet.forEach(n => updates.push({ id: n.id, font: { size: targetFont, color: "#F8FAFC", face: "Segoe UI", strokeWidth: 2.5, strokeColor: "#06090F" } }));
+            nodesDataSet.update(updates);
+        }
+        function toggleAdaptive() {
+            isAdaptive = !isAdaptive;
+            document.getElementById('rail-lod').classList.toggle('active', isAdaptive);
+            if (isAdaptive) updateAdaptiveLOD();
+        }
+
+        function marcarLayoutAtivo(mode) {
+            ['organico', 'arvore', 'pontes', 'comunidades'].forEach(m => {
+                const el = document.getElementById(`rail-${m}`);
+                if (el) el.classList.toggle('active', m === mode);
+            });
+        }
+
+        function changeLayout(mode) {
+            marcarLayoutAtivo(mode);
+            if (mode === "organico") {
+                const updates = rawNodes.filter(n => n.x !== undefined && n.y !== undefined).map(n => ({ id: n.id, x: n.x, y: n.y }));
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 60);
+            } else if (mode === "arvore") {
+                network.setOptions({ layout: { hierarchical: { direction: "UD", sortMethod: "hubsize", levelSeparation: 170, nodeSpacing: 210 } } });
+                setTimeout(() => { network.setOptions({ layout: { hierarchical: false } }); fitView(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 350);
+            } else if (mode === "pontes") {
+                const updates = [];
+                const bridges = rawNodes.filter(n => n.betweenness > 0.001).sort((a, b) => b.betweenness - a.betweenness);
+                const nonBridges = rawNodes.filter(n => !(n.betweenness > 0.001));
+                const bridgeSpacing = Math.max(80, Math.min(150, 1000 / Math.max(bridges.length, 1)));
+                const startY = Math.round(-((bridges.length - 1) * bridgeSpacing) / 2);
+                bridges.forEach((bNode, bIdx) => updates.push({ id: bNode.id, x: 0, y: startY + (bIdx * bridgeSpacing) }));
+                const leftNodes = [], rightNodes = [];
+                nonBridges.forEach((nb, i) => (i % 2 === 0 ? leftNodes : rightNodes).push(nb));
+                const flankSpacing = 60;
+                leftNodes.forEach((n, i) => updates.push({ id: n.id, x: -620, y: Math.round(-((leftNodes.length - 1) * flankSpacing) / 2) + (i * flankSpacing) }));
+                rightNodes.forEach((n, i) => updates.push({ id: n.id, x: 620, y: Math.round(-((rightNodes.length - 1) * flankSpacing) / 2) + (i * flankSpacing) }));
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 60);
+            } else if (mode === "comunidades") {
+                const updates = [];
+                const commGroups = {};
+                rawNodes.forEach(n => { const cid = n.community || 0; if (!commGroups[cid]) commGroups[cid] = []; commGroups[cid].push(n); });
+                const commKeys = Object.keys(commGroups).sort((a, b) => commGroups[b].length - commGroups[a].length);
+                const cols = commKeys.length <= 2 ? Math.max(commKeys.length, 1) : 3;
+                const rows = Math.ceil(commKeys.length / cols);
+                const commSpacingX = 1000, commSpacingY = 850;
+                commKeys.forEach((cid, idx) => {
+                    const cNodes = commGroups[cid];
+                    const col = idx % cols, row = Math.floor(idx / cols);
+                    const cx = Math.round((col - (cols - 1) / 2) * commSpacingX);
+                    const cy = Math.round((row - (rows - 1) / 2) * commSpacingY);
+                    const localHub = cNodes.find(n => n.id === masterHubId) || getLocalHub(cNodes, rawEdges);
+                    const others = cNodes.filter(n => n.id !== localHub.id);
+                    const rInternal = Math.max(90, Math.min(400, others.length * 20));
+                    updates.push({ id: localHub.id, x: cx, y: cy });
+                    others.forEach((n, nIdx) => {
+                        const a = (2 * Math.PI * nIdx) / Math.max(others.length, 1);
+                        updates.push({ id: n.id, x: Math.round(cx + (rInternal * Math.cos(a))), y: Math.round(cy + (rInternal * Math.sin(a))) });
+                    });
+                });
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 60);
+            }
+        }
+
+        function posicionarNosOrbitalmente(novosNos) {
+            const semPosicao = novosNos.filter(n => n.x === undefined || n.y === undefined);
+            if (semPosicao.length === 0) return;
+            const grupos = new Map();
+            semPosicao.forEach(n => {
+                const pai = n.orbit_ao_redor || masterHubId;
+                if (!grupos.has(pai)) grupos.set(pai, []);
+                grupos.get(pai).push(n);
+            });
+            grupos.forEach((grupo, paiId) => {
+                let posPai = { x: 0, y: 0 };
+                if (network) { const posExistente = network.getPositions([paiId]); if (posExistente[paiId]) posPai = posExistente[paiId]; }
+                const raio = Math.max(130, grupo.length * 22);
+                grupo.forEach((n, i) => {
+                    const angle = (2 * Math.PI * i) / Math.max(grupo.length, 1);
+                    n.x = Math.round(posPai.x + raio * Math.cos(angle));
+                    n.y = Math.round(posPai.y + raio * Math.sin(angle));
+                });
+            });
+        }
+
+        function criarNetwork() {
+            network = new vis.Network(container, { nodes: nodesDataSet, edges: edgesDataSet }, {
+                physics: { enabled: false },
+                interaction: { hover: true, zoomView: true, dragNodes: true, tooltipDelay: 100 }
+            });
+            network.on("beforeDrawing", desenharGridPontilhado);
+            network.on("afterDrawing", desenharMinimapa);
+            network.on("oncontext", handleContextMenu);
+            document.addEventListener("click", hideContextMenu);
+            network.on("dragStart", hideContextMenu);
+            network.on("click", function(params) {
+                if (params.nodes.length > 0) {
+                    const clickedId = params.nodes[0];
+                    selectedNodesQueue.push(clickedId);
+                    if (selectedNodesQueue.length > 6) selectedNodesQueue.shift();
+                    applyHighlight(clickedId);
+                    openInspector(clickedId);
+                    sendValueToStreamlit({ tipo: "node_click", nodeId: clickedId });
+                } else { applyHighlight(null); closeDrawer(); }
+            });
+            network.on("zoom", function() {
+                hideContextMenu();
+                if (isAdaptive) { if (zoomTimeout) clearTimeout(zoomTimeout); zoomTimeout = setTimeout(updateAdaptiveLOD, 120); }
+            });
+            initDrawerResize();
+        }
+
+        function inicializarOuAtualizarRede(novosDados) {
+            const assinaturaNova = JSON.stringify({ n: (novosDados.nodes || []).length, e: (novosDados.edges || []).length, h: novosDados.hub_id, l: novosDados.layout_ativo });
+            const mudouEstrutura = assinaturaNova !== assinaturaDadosAtual || !network;
+            baseFontSize = novosDados.base_font_size || 11;
+            alturaComponente = novosDados.height || 740;
+            targetSearchId = novosDados.target_node_id || "";
+            if (!mudouEstrutura) {
+                assinaturaDadosAtual = assinaturaNova;
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                setFrameHeightStreamlit(alturaComponente + 15);
+                return;
+            }
+            assinaturaDadosAtual = assinaturaNova;
+            rawNodes = novosDados.nodes || [];
+            rawEdges = novosDados.edges || [];
+            masterHubId = novosDados.hub_id || "";
+            initialLayout = novosDados.layout_ativo || "organico";
+            posicionarNosOrbitalmente(rawNodes);
+            nodeIndexMap = new Map(rawNodes.map(n => [n.id, n]));
+            adjacencyMap = new Map();
+            adjacencySimples = new Map();
+            rawNodes.forEach(n => { adjacencyMap.set(n.id, []); adjacencySimples.set(n.id, []); });
+            rawEdges.forEach(e => {
+                const title = e.title ? e.title.replace('Vínculo relacional: ', '') : 'Conexão';
+                if (adjacencyMap.has(e.from)) adjacencyMap.get(e.from).push({ id: e.to, title: title });
+                if (adjacencyMap.has(e.to)) adjacencyMap.get(e.to).push({ id: e.from, title: title });
+                if (adjacencySimples.has(e.from)) adjacencySimples.get(e.from).push(e.to);
+                if (adjacencySimples.has(e.to)) adjacencySimples.get(e.to).push(e.from);
+            });
+            nodesDataSet.clear(); edgesDataSet.clear();
+            nodesDataSet.add(rawNodes); edgesDataSet.add(rawEdges);
+            if (!network) criarNetwork();
+            setTimeout(function() {
+                if (initialLayout && initialLayout !== "organico") changeLayout(initialLayout);
+                else { marcarLayoutAtivo("organico"); fitView(); }
+                if (isAdaptive) updateAdaptiveLOD();
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                setFrameHeightStreamlit(alturaComponente + 15);
+            }, 60);
+        }
+
+        window.addEventListener("message", function(event) {
+            if (!event.data || event.data.type !== "streamlit:render") return;
+            inicializarOuAtualizarRede(event.data.args || {});
+        });
+
+        notifyReadyStreamlit();
+    </script>
+</body>
+</html>
