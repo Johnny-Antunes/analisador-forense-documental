@@ -1,0 +1,154 @@
+(() => {
+    // 1. Extração do Identificador e Elementos Básicos
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    const username = pathParts[0] || 'alvo';
+    
+    // Captura cabeçalho e textos de biografia
+    const header = document.querySelector('header') || document.body;
+    const headerText = header.innerText;
+    
+    // 2. Varredura profunda de links e desempacotamento de redirecionamentos Meta (Link Shim)
+    const allLinks = Array.from(document.querySelectorAll('a'));
+    let waLink = null;
+    let waNumber = null;
+    let externalLink = null;
+
+    for (const a of allLinks) {
+        let href = a.href || '';
+        
+        // Decodifica redirecionamento do Instagram (l.instagram.com/?u=...)
+        if (href.includes('l.instagram.com')) {
+            try {
+                const params = new URLSearchParams(new URL(href).search);
+                if (params.has('u')) href = decodeURIComponent(params.get('u'));
+            } catch (e) {}
+        }
+
+        // Verifica se é link do WhatsApp
+        if (href.includes('wa.me') || href.includes('whatsapp.com')) {
+            waLink = href;
+            const match = href.match(/(?:phone=|wa\.me\/)(\+?[0-9]{10,15})/);
+            if (match) waNumber = match[1].replace('+', '');
+        } else if (href.startsWith('http') && !href.includes('instagram.com') && !externalLink) {
+            externalLink = href;
+        }
+    }
+
+    // Se o botão não estiver como tag <a> tradicional, solicita a URL copiada
+    if (!waNumber) {
+        const manualInput = prompt(
+            "O botão do WhatsApp não expôs a URL automaticamente no DOM.\n" +
+            "Se você copiou o link do botão (clique direito > Copiar endereço do link), cole abaixo.\n" +
+            "Caso contrário, digite apenas o número ou deixe em branco:"
+        );
+        if (manualInput) {
+            waLink = manualInput;
+            const match = manualInput.match(/(?:phone=|wa\.me\/)?(\+?[0-9]{10,15})/);
+            if (match) waNumber = match[1].replace('+', '');
+        }
+    }
+
+    // 3. Montagem do Dossiê Visual
+    const dataHora = new Date().toLocaleString('pt-BR');
+    const relatorioHTML = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Dossiê OSINT - @${username}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; padding: 30px; margin: 0; color: #0f172a; }
+        .card { max-width: 750px; margin: 0 auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 28px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px; }
+        .badge { background: #991b1b; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .field { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; margin-bottom: 14px; font-size: 13px; }
+        .field strong { display: block; font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px; }
+        .highlight { background: #fff1f2; border: 1px solid #fecdd3; border-left: 4px solid #e11d48; padding: 14px; border-radius: 4px; margin-bottom: 18px; }
+        .highlight h3 { margin: 0 0 6px 0; font-size: 14px; color: #9f1239; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; color: #475569; }
+        .btn-print { background: #0f172a; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 16px; }
+        @media print { .btn-print { display: none; } body { padding: 0; background: #fff; } .card { border: none; box-shadow: none; width: 100%; max-width: 100%; } }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <button class="btn-print" onclick="window.print()">Salvar como PDF / Imprimir</button>
+        <div class="header">
+            <div>
+                <h2 style="margin: 0; font-size: 20px;">Dossiê de Identificação de Perfil</h2>
+                <small style="color: #64748b;">Evidência Digital / Análise de Fraude</small>
+            </div>
+            <span class="badge">Auditoria OSINT</span>
+        </div>
+
+        <div class="highlight">
+            <h3>Alvo: @${username}</h3>
+            <strong>WhatsApp Identificado no Botão:</strong> ${waNumber ? '+ ' + waNumber : 'Não identificado'}
+        </div>
+
+        <div class="field">
+            <strong>URL do Botão Decodificada</strong>
+            <span style="word-break: break-all;">${waLink || 'Nenhum link direto encontrado'}</span>
+        </div>
+
+        <div class="field">
+            <strong>Link Externo na Bio</strong>
+            <span>${externalLink || 'Nenhum'}</span>
+        </div>
+
+        <div class="field">
+            <strong>Matriz de Contatos para Cruzamento</strong>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Canal</th>
+                        <th>Número / Dado</th>
+                        <th>Observação de Auditoria</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>WhatsApp Operacional</strong></td>
+                        <td><strong>${waNumber || 'Inconclusivo'}</strong></td>
+                        <td>Extraído via parâmetro wa.me no botão de ação</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Telefone de Cadastro</strong></td>
+                        <td><em>(Inserir se visto no App)</em></td>
+                        <td>Verificar divergência em relação ao WhatsApp</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="field">
+            <strong>Dados Brutos Extraídos da Interface</strong>
+            <pre style="white-space: pre-wrap; margin: 0; font-family: inherit; font-size: 12px; color: #334155;">${headerText}</pre>
+        </div>
+
+        <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; display: flex; justify-content: space-between;">
+            <span>Data de Coleta: ${dataHora}</span>
+            <span>Integridade: Extração de Sessão Ativa</span>
+        </div>
+    </div>
+</body>
+</html>`;
+
+    // 4. Exibição: abre diretamente em nova aba
+    const novaAba = window.open('', '_blank');
+    if (novaAba) {
+        novaAba.document.write(relatorioHTML);
+        novaAba.document.close();
+    } else {
+        // Fallback caso o bloqueador de pop-ups impeça window.open
+        const blob = new Blob([relatorioHTML], { type: 'text/html;charset=utf-8;' });
+        const linkDownload = document.createElement('a');
+        linkDownload.href = URL.createObjectURL(blob);
+        linkDownload.download = `auditoria_${username}.html`;
+        document.body.appendChild(linkDownload);
+        linkDownload.click();
+        document.body.removeChild(linkDownload);
+        alert("Pop-up bloqueado pelo navegador. O relatório foi baixado diretamente como arquivo HTML!");
+    }
+})();
