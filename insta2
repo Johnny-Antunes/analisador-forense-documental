@@ -249,12 +249,16 @@
                 <input type="text" id="in_tel_wa" placeholder="Ex: (85) 99999-9999">
             </div>
             <div>
-                <label>Telefone em «Informações de contato»</label>
+                <label>Telefone Comercial (Informações de contato)</label>
                 <input type="text" id="in_tel_contato" placeholder="Ex: (85) 3456-7890">
             </div>
             <div>
-                <label>Link Externo na Bio (Facebook, Site, etc.)</label>
-                <input type="text" id="in_link_externo" placeholder="Ex: Casa Do Pet ou https://facebook.com/..." value="Casa Do Pet">
+                <label>Nome / Rótulo do Link Externo</label>
+                <input type="text" id="in_link_rotulo" placeholder="Ex: Página Facebook Casa Do Pet" value="Casa Do Pet">
+            </div>
+            <div style="grid-column: span 2;">
+                <label>URL Real de Destino do Link Externo (Cole o link direto ou com l.instagram.com)</label>
+                <input type="text" id="in_link_url" placeholder="Ex: https://facebook.com/casadopetmn ou cole o link copiado do botão">
             </div>
         </div>
         <div style="margin-top: 10px;">
@@ -300,8 +304,8 @@
                 <thead>
                     <tr>
                         <th>Canal de Contato</th>
-                        <th>Dado / Identificador Informado</th>
-                        <th>URL / Formato Padrão Gerado</th>
+                        <th>Identificador / Nome Exibido</th>
+                        <th>URL / Destino Padrão Gerado</th>
                     </tr>
                 </thead>
                 <tbody id="out_tabela_contatos">
@@ -330,21 +334,29 @@ function formatarUrlWhatsApp(numeroBruto) {
     return `https://wa.me/${digitos}`;
 }
 
-function formatarUrlExterna(linkBruto) {
-    if (!linkBruto) return null;
-    let limpo = linkBruto.trim();
-    if (!limpo) return null;
+// Descompacta redirecionamentos do Instagram e padroniza URLs
+function desempacotarUrl(urlBruta) {
+    if (!urlBruta) return null;
+    let limpa = urlBruta.trim();
+    if (!limpa) return null;
 
-    if (limpo.startsWith('http://') || limpo.startsWith('https://')) {
-        return limpo;
+    // Se veio pelo redirecionador do Instagram (l.instagram.com)
+    if (limpa.includes('l.instagram.com')) {
+        try {
+            const params = new URLSearchParams(new URL(limpa).search);
+            if (params.has('u')) {
+                limpa = decodeURIComponent(params.get('u'));
+            }
+        } catch (e) {}
     }
 
-    // Se contém extensão ou domínio comum (ex: facebook.com/..., bit.ly/...)
-    if (limpo.includes('.') && !limpo.includes(' ')) {
-        return `https://${limpo}`;
+    if (!limpa.startsWith('http://') && !limpa.startsWith('https://')) {
+        if (limpa.includes('.') && !limpa.includes(' ')) {
+            limpa = 'https://' + limpa;
+        }
     }
 
-    return null;
+    return limpa;
 }
 
 function gerarDossie() {
@@ -354,7 +366,8 @@ function gerarDossie() {
     const bio = document.getElementById('in_bio').value;
     const telWa = document.getElementById('in_tel_wa').value.trim();
     const telCt = document.getElementById('in_tel_contato').value.trim();
-    const linkExt = document.getElementById('in_link_externo').value.trim();
+    const linkRotulo = document.getElementById('in_link_rotulo').value.trim();
+    const linkUrlBruta = document.getElementById('in_link_url').value.trim();
 
     // Atualiza cabeçalhos
     document.getElementById('out_user').innerText = '@' + user;
@@ -386,13 +399,13 @@ function gerarDossie() {
         </tr>
     `;
 
-    // Linha Link Externo
-    const urlFormatada = formatarUrlExterna(linkExt);
+    // Linha Link Externo / Facebook
+    const urlFinal = desempacotarUrl(linkUrlBruta);
     tbody.innerHTML += `
         <tr>
-            <td><strong>Link Externo na Bio</strong></td>
-            <td>${linkExt || '<span style="color:#6b7280">Nenhum</span>'}</td>
-            <td>${urlFormatada ? `<span class="url-highlight">${urlFormatada}</span>` : (linkExt ? `<span style="color:#9ca3af">Rótulo / Perfil Vinculado</span>` : '<span style="color:#6b7280">-</span>')}</td>
+            <td><strong>Link Externo / Bio</strong></td>
+            <td>${linkRotulo || '<span style="color:#6b7280">Link Externo</span>'}</td>
+            <td>${urlFinal ? `<span class="url-highlight">${urlFinal}</span>` : '<span style="color:#6b7280">URL não informada</span>'}</td>
         </tr>
     `;
 
