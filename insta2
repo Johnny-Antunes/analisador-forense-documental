@@ -1,296 +1,406 @@
-(() => {
-    // 1. Identificação do Alvo
-    const pathParts = window.location.pathname.split('/').filter(Boolean);
-    const username = pathParts[0] || 'alvo';
-
-    // 2. Varredura Profunda de Links (Facebook, sites externos e WhatsApp)
-    const allLinks = Array.from(document.querySelectorAll('a'));
-    let waLink = null;
-    let waNumber = null;
-    let externalLinks = [];
-
-    for (const a of allLinks) {
-        let href = a.href || '';
-        
-        // Decodifica redirecionamentos da Meta (l.instagram.com/?u=...)
-        if (href.includes('l.instagram.com')) {
-            try {
-                const params = new URLSearchParams(new URL(href).search);
-                if (params.has('u')) href = decodeURIComponent(params.get('u'));
-            } catch (e) {}
-        }
-
-        // Verifica WhatsApp
-        if (href.includes('wa.me') || href.includes('whatsapp.com')) {
-            waLink = href;
-            const match = href.match(/(?:phone=|wa\.me\/)(\+?[0-9]{10,15})/);
-            if (match) waNumber = match[1].replace('+', '');
-        } 
-        // Identifica outros links (Facebook, Linktree, sites próprios)
-        else if (href.startsWith('http') && !href.includes('instagram.com') && !href.includes('threads.net')) {
-            const rotulo = a.innerText.trim() || href;
-            if (!externalLinks.some(item => item.url === href)) {
-                externalLinks.push({ label: rotulo, url: href });
-            }
-        }
-    }
-
-    // Função para padronizar e gerar URL wa.me
-    const processarWhatsApp = (valor) => {
-        if (!valor) return { numero: null, url: null };
-        let digitos = valor.replace(/\D/g, '');
-        if (!digitos) return { numero: valor, url: null };
-        if ((digitos.length === 10 || digitos.length === 11) && !digitos.startsWith('55')) {
-            digitos = '55' + digitos;
-        }
-        return {
-            numero: valor,
-            url: `https://wa.me/${digitos}`
-        };
-    };
-
-    // 3. Entradas Interativas
-    // WhatsApp: se não achou no DOM, solicita
-    if (!waNumber) {
-        const inputWa = prompt("Informe o número do WhatsApp (visto no app ou digite o número):", "");
-        if (inputWa) {
-            const res = processarWhatsApp(inputWa);
-            waNumber = res.numero;
-            waLink = res.url;
-        }
-    } else {
-        const res = processarWhatsApp(waNumber);
-        waLink = res.url || waLink;
-    }
-
-    // Telefone Comercial / Contato Fixo
-    const telContato = prompt("Informe o outro telefone comercial (visto em 'Informações de contato' no app, se houver):", "") || "Não informado";
-
-    // 4. Isolamento e Limpeza da Biografia
-    const header = document.querySelector('header') || document.body;
-    const rawLines = header.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-    
-    // Filtra palavras de controle da interface para isolar a biografia
-    const stopWords = ['posts', 'publicações', 'seguidores', 'seguindo', 'seguir', 'mensagem', 'enviar mensagem', 'contato', 'whatsapp', 'sugestões para você', 'ver tudo', 'editar perfil', 'usar o app'];
-    const linhasBio = rawLines.filter(linha => {
-        const lower = linha.toLowerCase();
-        if (lower === username.toLowerCase()) return false;
-        if (stopWords.some(termo => lower.includes(termo) && lower.length < 35)) return false;
-        return true;
-    });
-
-    const bioFormatada = linhasBio.join('\n');
-    const dataHora = new Date().toLocaleString('pt-BR');
-
-    // 5. Montagem do HTML com Visual Escuro
-    const relatorioHTML = `<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Dossiê OSINT - @${username}</title>
+    <title>Dossiê de Perfil - Consolidação de Contatos</title>
     <style>
         :root {
-            --bg-body: #0b0f19;
-            --bg-card: #111827;
-            --bg-surface: #1f2937;
-            --border: #374151;
-            --text: #f9fafb;
-            --text-muted: #9ca3af;
-            --cyan: #38bdf8;
+            --bg-page: #0b0f19;
+            --card-bg: #111827;
+            --card-surface: #1f2937;
+            --border-color: #374151;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --accent: #38bdf8;
+            --accent-hover: #0284c7;
         }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-body);
-            color: var(--text);
-            padding: 25px;
+            background-color: var(--bg-page);
+            color: var(--text-primary);
+            padding: 24px;
             margin: 0;
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
         }
+
         .container {
-            max-width: 780px;
+            max-width: 800px;
             margin: 0 auto;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 26px;
-            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
+            padding: 28px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
         }
+
+        /* Painel de Inserção */
+        .input-panel {
+            background: var(--card-surface);
+            border: 1px solid var(--border-color);
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 24px;
+        }
+
+        .input-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        label {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        input, textarea {
+            width: 100%;
+            background: #111827;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 9px;
+            font-size: 13px;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .btn-action {
+            background: var(--accent);
+            color: #0b0f19;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 14px;
+            transition: background 0.2s;
+        }
+
+        .btn-action:hover {
+            background: var(--accent-hover);
+        }
+
+        /* Cabeçalho do Dossiê */
         .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 2px solid var(--border);
+            border-bottom: 2px solid var(--border-color);
             padding-bottom: 12px;
             margin-bottom: 20px;
         }
+
         .badge {
             background: #1e293b;
-            color: var(--cyan);
-            border: 1px solid #0284c7;
+            color: var(--accent);
+            border: 1px solid #0369a1;
             padding: 4px 10px;
             border-radius: 4px;
             font-size: 11px;
             font-weight: 700;
             text-transform: uppercase;
         }
-        .field-box {
-            background: var(--bg-surface);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 12px;
-            margin-bottom: 14px;
+
+        /* Estrutura do Dossiê Visual */
+        #dossie-output {
+            display: none;
         }
-        .field-box label {
-            display: block;
+
+        .data-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .field-box {
+            background: var(--card-surface);
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        .field-box strong {
             font-size: 10px;
-            font-weight: 700;
-            color: var(--text-muted);
             text-transform: uppercase;
+            color: var(--text-secondary);
             letter-spacing: 0.5px;
+            display: block;
             margin-bottom: 4px;
         }
+
         .field-box span {
             font-size: 14px;
             font-weight: 600;
+            color: var(--text-primary);
         }
-        .bio-text {
+
+        .bio-content {
             white-space: pre-line;
             font-size: 13px;
             line-height: 1.5;
             color: #e5e7eb;
+            font-weight: 400 !important;
         }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 6px;
+            margin-top: 10px;
             font-size: 13px;
         }
+
         th, td {
-            border: 1px solid var(--border);
+            border: 1px solid var(--border-color);
             padding: 10px;
             text-align: left;
         }
+
         th {
             background: #111827;
-            color: var(--text-muted);
+            color: var(--text-secondary);
             font-size: 11px;
             text-transform: uppercase;
         }
+
         td {
-            background: var(--bg-surface);
+            background: var(--card-surface);
         }
-        .url-code {
-            color: var(--cyan);
+
+        .url-highlight {
+            color: var(--accent);
             font-family: monospace;
             font-size: 12px;
             word-break: break-all;
         }
-        .btn-print {
-            background: var(--cyan);
-            color: #0b0f19;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 700;
-            margin-bottom: 16px;
-        }
+
         .footer {
             font-size: 11px;
-            color: var(--text-muted);
-            border-top: 1px solid var(--border);
-            padding-top: 10px;
-            margin-top: 16px;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border-color);
+            padding-top: 12px;
+            margin-top: 20px;
             display: flex;
             justify-content: space-between;
         }
+
+        /* Impressão / PDF */
         @media print {
-            body { background: var(--bg-body) !important; padding: 0; }
-            .btn-print { display: none; }
-            .container { border: none; box-shadow: none; max-width: 100%; padding: 0; }
+            body {
+                background-color: var(--bg-page) !important;
+                padding: 0;
+            }
+            .input-panel, .btn-action {
+                display: none !important;
+            }
+            #dossie-output {
+                display: block !important;
+            }
+            .container {
+                border: none;
+                box-shadow: none;
+                max-width: 100%;
+                padding: 0;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <button class="btn-print" onclick="window.print()">Salvar como PDF / Imprimir</button>
-        
-        <div class="header">
+
+<div class="container">
+    <div class="header">
+        <div>
+            <h2 style="margin: 0; font-size: 18px; color: var(--text-primary);">Dossiê de Consolidação de Perfil</h2>
+            <small style="color: var(--text-secondary);">Levantamento Cadastral e de Contatos</small>
+        </div>
+        <span class="badge">Registro de Evidência</span>
+    </div>
+
+    <!-- Painel de Inserção -->
+    <div class="input-panel">
+        <div class="input-grid">
             <div>
-                <h2 style="margin: 0; font-size: 18px;">Dossiê de Contatos do Perfil</h2>
-                <small style="color: var(--text-muted);">Auditoria e Preservação de Evidência Digital</small>
+                <label>Usuário (@)</label>
+                <input type="text" id="in_user" value="casadopetmn">
             </div>
-            <span class="badge">OSINT Instagram</span>
+            <div>
+                <label>Nome do Perfil</label>
+                <input type="text" id="in_nome" value="Casa do Pet">
+            </div>
+            <div>
+                <label>Categoria / Segmento</label>
+                <input type="text" id="in_categoria" value="Produto/serviço">
+            </div>
+            <div>
+                <label>Telefone do WhatsApp (Botão do App)</label>
+                <input type="text" id="in_tel_wa" placeholder="Ex: (85) 99999-9999">
+            </div>
+            <div>
+                <label>Telefone em «Informações de contato»</label>
+                <input type="text" id="in_tel_contato" placeholder="Ex: (85) 3456-7890">
+            </div>
+            <div>
+                <label>Link Externo na Bio (Facebook, Site, etc.)</label>
+                <input type="text" id="in_link_externo" placeholder="Ex: Casa Do Pet ou https://facebook.com/..." value="Casa Do Pet">
+            </div>
+        </div>
+        <div style="margin-top: 10px;">
+            <label>Biografia Completa</label>
+            <textarea id="in_bio" rows="4">🐶 Hospedagem familiar sem gaiolas
+📍 Morada Nova - CE
+🎬 Rotina real dos hóspedes
+💖 +200 cães felizes
+👇 Reserve a vaga do seu pet</textarea>
+        </div>
+        <button class="btn-action" onclick="gerarDossie()">Gerar Dossiê e Salvar em PDF</button>
+    </div>
+
+    <!-- Dossiê Final Estruturado -->
+    <div id="dossie-output">
+        <div class="data-grid">
+            <div class="field-box">
+                <strong>Identificador de Usuário</strong>
+                <span id="out_user"></span>
+            </div>
+            <div class="field-box">
+                <strong>Nome Apresentado</strong>
+                <span id="out_nome"></span>
+            </div>
+            <div class="field-box">
+                <strong>Segmento de Atuação</strong>
+                <span id="out_categoria"></span>
+            </div>
+            <div class="field-box">
+                <strong>Data / Hora da Coleta</strong>
+                <span id="out_data"></span>
+            </div>
+        </div>
+
+        <div class="field-box" style="margin-bottom: 16px;">
+            <strong>Biografia Registrada</strong>
+            <div id="out_bio" class="bio-content"></div>
         </div>
 
         <div class="field-box">
-            <label>Usuário Auditado</label>
-            <span style="color: var(--cyan);">@${username}</span>
-        </div>
-
-        <div class="field-box">
-            <label>Biografia Extraída</label>
-            <div class="bio-text">${bioFormatada || 'Nenhum texto de biografia identificado.'}</div>
-        </div>
-
-        <div class="field-box">
-            <label>Matriz Consolidada de Contatos</label>
+            <strong>Canais e Identificadores de Contato Localizados</strong>
             <table>
                 <thead>
                     <tr>
                         <th>Canal de Contato</th>
-                        <th>Dado / Número Registrado</th>
-                        <th>Destino / URL Padrão</th>
+                        <th>Dado / Identificador Informado</th>
+                        <th>URL / Formato Padrão Gerado</th>
                     </tr>
                 </thead>
-                <tbody>
-                    <tr>
-                        <td><strong>WhatsApp</strong></td>
-                        <td>${waNumber || '<span style="color:var(--text-muted)">Não informado</span>'}</td>
-                        <td>${waLink ? `<span class="url-code">${waLink}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Telefone Comercial</strong></td>
-                        <td>${telContato}</td>
-                        <td><span style="color:var(--text-muted)">Canal de voz / Cadastro</span></td>
-                    </tr>
-                    ${externalLinks.length > 0 ? externalLinks.map(l => `
-                        <tr>
-                            <td><strong>Link Externo (${l.label})</strong></td>
-                            <td colspan="2"><span class="url-code">${l.url}</span></td>
-                        </tr>
-                    `).join('') : `
-                        <tr>
-                            <td><strong>Link Externo</strong></td>
-                            <td colspan="2"><span style="color:var(--text-muted)">Nenhum link externo na bio</span></td>
-                        </tr>
-                    `}
+                <tbody id="out_tabela_contatos">
+                    <!-- Gerado dinamicamente -->
                 </tbody>
             </table>
         </div>
 
         <div class="footer">
-            <span>Data de Extração: ${dataHora}</span>
-            <span>Ambiente: Extração Local Segura</span>
+            <span>Extração de Dados Públicos</span>
+            <span>Documento Gerado Localmente</span>
         </div>
     </div>
-</body>
-</html>`;
+</div>
 
-    // 6. Exibição da nova aba
-    const novaAba = window.open('', '_blank');
-    if (novaAba) {
-        novaAba.document.write(relatorioHTML);
-        novaAba.document.close();
-    } else {
-        const blob = new Blob([relatorioHTML], { type: 'text/html;charset=utf-8;' });
-        const linkDownload = document.createElement('a');
-        linkDownload.href = URL.createObjectURL(blob);
-        linkDownload.download = `auditoria_${username}.html`;
-        document.body.appendChild(linkDownload);
-        linkDownload.click();
-        document.body.removeChild(linkDownload);
+<script>
+function formatarUrlWhatsApp(numeroBruto) {
+    if (!numeroBruto) return null;
+    let digitos = numeroBruto.replace(/\D/g, '');
+    if (!digitos) return null;
+
+    if ((digitos.length === 10 || digitos.length === 11) && !digitos.startsWith('55')) {
+        digitos = '55' + digitos;
     }
-})();
+
+    return `https://wa.me/${digitos}`;
+}
+
+function formatarUrlExterna(linkBruto) {
+    if (!linkBruto) return null;
+    let limpo = linkBruto.trim();
+    if (!limpo) return null;
+
+    if (limpo.startsWith('http://') || limpo.startsWith('https://')) {
+        return limpo;
+    }
+
+    // Se contém extensão ou domínio comum (ex: facebook.com/..., bit.ly/...)
+    if (limpo.includes('.') && !limpo.includes(' ')) {
+        return `https://${limpo}`;
+    }
+
+    return null;
+}
+
+function gerarDossie() {
+    const user = document.getElementById('in_user').value.trim();
+    const nome = document.getElementById('in_nome').value.trim();
+    const categoria = document.getElementById('in_categoria').value.trim();
+    const bio = document.getElementById('in_bio').value;
+    const telWa = document.getElementById('in_tel_wa').value.trim();
+    const telCt = document.getElementById('in_tel_contato').value.trim();
+    const linkExt = document.getElementById('in_link_externo').value.trim();
+
+    // Atualiza cabeçalhos
+    document.getElementById('out_user').innerText = '@' + user;
+    document.getElementById('out_nome').innerText = nome || 'Não informado';
+    document.getElementById('out_categoria').innerText = categoria || 'Geral';
+    document.getElementById('out_bio').innerText = bio || 'Biografia vazia.';
+    document.getElementById('out_data').innerText = new Date().toLocaleString('pt-BR');
+
+    // Monta a tabela de contatos
+    const tbody = document.getElementById('out_tabela_contatos');
+    tbody.innerHTML = '';
+
+    // Linha WhatsApp
+    const waUrl = formatarUrlWhatsApp(telWa);
+    tbody.innerHTML += `
+        <tr>
+            <td><strong>WhatsApp (Botão)</strong></td>
+            <td>${telWa || '<span style="color:#6b7280">Não informado</span>'}</td>
+            <td>${waUrl ? `<span class="url-highlight">${waUrl}</span>` : '<span style="color:#6b7280">-</span>'}</td>
+        </tr>
+    `;
+
+    // Linha Telefone Comercial
+    tbody.innerHTML += `
+        <tr>
+            <td><strong>Telefone Comercial</strong></td>
+            <td>${telCt || '<span style="color:#6b7280">Não informado</span>'}</td>
+            <td><span style="color:#9ca3af">Canal de Voz / Opções de Contato</span></td>
+        </tr>
+    `;
+
+    // Linha Link Externo
+    const urlFormatada = formatarUrlExterna(linkExt);
+    tbody.innerHTML += `
+        <tr>
+            <td><strong>Link Externo na Bio</strong></td>
+            <td>${linkExt || '<span style="color:#6b7280">Nenhum</span>'}</td>
+            <td>${urlFormatada ? `<span class="url-highlight">${urlFormatada}</span>` : (linkExt ? `<span style="color:#9ca3af">Rótulo / Perfil Vinculado</span>` : '<span style="color:#6b7280">-</span>')}</td>
+        </tr>
+    `;
+
+    // Exibe o dossiê e aciona impressão em PDF
+    document.getElementById('dossie-output').style.display = 'block';
+    window.print();
+}
+</script>
+
+</body>
+</html>
