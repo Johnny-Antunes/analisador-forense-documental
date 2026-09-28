@@ -1,0 +1,2671 @@
+"""
+Módulo: app_nicegui.py
+Objetivo: Mesa de Inteligência Forense de Fraudes em Assistências (LCFO) — NiceGUI.
+
+AJUSTES DESTA RODADA:
+  - Transporte do payload do grafo (nós/arestas/posições) deixou de trafegar
+    embutido no comando JS enviado via ui.run_javascript (WebSocket/Socket.IO,
+    com teto de tamanho de mensagem em torno de 1 MB por padrão). Grafos
+    grandes (~1000 nós) chegavam perto ou estouravam esse teto, e a mensagem
+    era descartada em silêncio — o grafo carregava com o fundo vazio, sem
+    nenhum erro visível. Agora o payload é gravado em
+    componente_grafo/_payloads/<chave>.json (sobrescrito a cada atualização,
+    sem acumular arquivos) e só a URL desse arquivo trafega pelo WebSocket;
+    o iframe busca o conteúdo via fetch() HTTP normal, sem esse limite, e
+    com JSON.parse() nativo em vez de reinterpretar um payload gigante como
+    texto de script — mais rápido também para os grafos de hoje, não só para
+    os maiores. Nenhum layout já calculado/salvo é afetado; é uma mudança só
+    de transporte, não de cálculo ou persistência.
+  - Adicionado método focar_no na classe GrafoBidirecionalNiceGUI e otimizado
+    o clique na lista de Entities na sidebar para disparo leve via postMessage
+    ('streamlit:focus_node'), eliminando a latência de regravar e recarregar
+    todo o payload do grafo desnecessariamente.
+  - Demais ajustes já consolidados em rodadas anteriores mantidos: sincronização
+    de seleção sidebar<->grafo (incluindo sync_selection_from_canvas para
+    retângulo/laço/shift-click), nome_quadrilha_override na Fusão de Sketch e
+    na Expansão com Criações, tooltips nativos, edição de pareceres, etc.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import math
+import re
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+import pandas as pd
+import pydeck as pdk
+from nicegui import app, ui
+
+import database
+from database import (
+    CAMINHO_REDE_OFICIAL, PASTA_LOCAL_BLACKLIST,
+    CAMINHO_REDE_CRIACAO, PASTA_LOCAL_CRIACAO,
+    carregar_arquivos_para_sqlite, carregar_criacoes_diarias_para_sqlite,
+    consultar_detalhes_caso, cruzar_com_criacoes_diarias, obter_radar_expansoes,
+    salvar_dados_caso, atualizar_metadados_caso, carregar_dados_caso, carregar_todos_casos_cadastrados,
+    cadastrar_entidade_suspeita, listar_entidades_suspeitas, remover_entidade_suspeita,
+    consultar_todas_ocorrencias_entidade, semear_base_mestra_da_blacklist,
+    investigar_alvo_em_criacoes_diarias, promover_descoberta_para_caso,
+    vincular_caso_e_entidades, anexar_descoberta_a_caso_existente,
+    carregar_historico_pareceres, resetar_layout_caso,
+    cadastrar_cidade_risco, listar_cidades_risco, remover_cidade_risco,
+    reparar_mojibake_historico,
+    ocultar_no_do_caso, restaurar_no_do_caso, listar_nos_ocultos_do_caso,
+    salvar_posicoes_layout_caso, carregar_posicoes_layout_caso,
+    criar_sketch, listar_sketches_do_caso, carregar_sketch, renomear_sketch,
+    remover_sketch, salvar_nos_extras_sketch, carregar_nos_extras_sketch,
+    vincular_cluster_como_sketch, registrar_parecer, atualizar_parecer_historico,
+)
+from graph_engine import (
+    carregar_redes, processar_subgrafo_caso, processar_grafo_dataframe,
+    _criar_svg_nodo_flowsint
+)
+from correlation_engine import calcular_score_caso, obter_scores_triagem
+from anomalias_engine import obter_radar_anomalias_macro, extrair_top_infratores_municipio
+from utils import formatar_mencoes_forenses, formatar_cpf_cnpj, formatar_tel
+
+try:
+    from enrich_engine import enriquecer_entidade_local, CORES_POR_TIPO, PREFIXO_POR_TIPO
+    TEM_ENRICH_ENGINE = True
+except ImportError:
+    TEM_ENRICH_ENGINE = False
+    CORES_POR_TIPO = {
+        "cpf": {"bg": "#3C6FA8", "border": "#5A94D6"},
+        "telefone": {"bg": "#B94A3C", "border": "#E0684F"},
+        "placa": {"bg": "#6D4FA8", "border": "#9273D6"},
+        "prestador": {"bg": "#4A7A5A", "border": "#6BA57D"},
+        "empresa": {"bg": "#4A4A4A", "border": "#767676"}
+    }
+    PREFIXO_POR_TIPO = {"cpf": "CPF", "telefone": "TEL", "placa": "PLACA", "prestador": "PREST", "empresa": "EMP"}
+
+try:
+    from exif_engine import extrair_metadados_foto, validar_coerencia_geografica_foto
+    TEM_EXIF_ENGINE = True
+except ImportError:
+    TEM_EXIF_ENGINE = False
+
+# =========================================================================
+# CONSTANTES & PALETA FORENSE
+# =========================================================================
+FONT_PADRAO = 11
+ESPACAMENTO_PADRAO = 280
+TOLERANCIA_KM_EXIF = 60.0
+
+CORES_STATUS = {
+    "Em Investigação": "#6C93B0", "Confirmado Fraude": "#C0625F", "Monitoramento Contínuo": "#8F86B5",
+    "Sem Irregularidade Identificada": "#6FA98A", "Falso Positivo": "#8B95A5", "Arquivado": "#5B6472",
+}
+CORES_RISCO = {"BAIXO": "#6FA98A", "MÉDIO": "#C9A66B", "ALTO": "#C98756", "CRÍTICO": "#C0625F"}
+
+STATUS_ATIVOS = {"Em Investigação", "Confirmado Fraude", "Monitoramento Contínuo"}
+STATUS_ENCERRADOS = {"Sem Irregularidade Identificada", "Falso Positivo", "Arquivado"}
+
+UFS_BRASIL = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG",
+              "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
+
+OPCOES_TOOLBAR = [
+    "Grafo de Vínculos", "Tabela de Ocorrências", "Expansão com Criações",
+    "Radar Territorial (Mapa)", "Evolução Temporal", "Ferramentas"
+]
+ICONE_TOOLBAR = {
+    "Grafo de Vínculos": "hub", "Tabela de Ocorrências": "table_chart",
+    "Expansão com Criações": "swap_horiz", "Radar Territorial (Mapa)": "location_on",
+    "Evolução Temporal": "timeline", "Ferramentas": "tune"
+}
+
+LABELS_FILTRO_TIPO = {"TODOS": "Todos", "CPF": "CPF", "TELEFONE": "Telefone", "PLACA": "Placa"}
+CLASSE_MENU_PADRAO = 'bg-[#18181A]/95 backdrop-blur-lg border border-[#2B2B2F] p-2 rounded-xl shadow-2xl'
+
+# =========================================================================
+# DATASTORE COM RECARREGAMENTO INTEGRADO
+# =========================================================================
+class DataStore:
+    def __init__(self):
+        self.G = None
+        self.cluster_info: List[Dict[str, Any]] = []
+        self.casos_cadastrados: Dict[str, Any] = {}
+        self.radar_alertas: Dict[str, int] = {}
+        self.recarregar()
+
+    def recarregar(self):
+        self.G, cluster_info = carregar_redes()
+        self.cluster_info = cluster_info or []
+        self.radar_alertas = obter_radar_expansoes(self.cluster_info) if self.cluster_info else {}
+        self.casos_cadastrados = carregar_todos_casos_cadastrados()
+
+DADOS = DataStore()
+
+_DIR_COMPONENTE_GRAFO = Path(__file__).parent / "componente_grafo"
+_DIR_PAYLOADS_GRAFO = _DIR_COMPONENTE_GRAFO / "_payloads"
+if _DIR_COMPONENTE_GRAFO.exists():
+    app.add_static_files('/lcfo_grafo_assets', str(_DIR_COMPONENTE_GRAFO))
+    _DIR_PAYLOADS_GRAFO.mkdir(exist_ok=True)
+
+
+def resolver_dossie_do_cluster(cluster_id: str) -> str:
+    if cluster_id in DADOS.casos_cadastrados:
+        return cluster_id
+    conn = database.get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id_caso FROM caso_sketches WHERE cluster_origem_id = ? LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        return row["id_caso"] if row else cluster_id
+    finally:
+        conn.close()
+
+
+# =========================================================================
+# MINIATURA DE GRAFO EM SVG (PREVIEW PARA SKETCHES)
+# =========================================================================
+def gerar_svg_miniatura_cluster(c_obj: Optional[Dict[str, Any]]) -> str:
+    if not c_obj or not c_obj.get("nodes"):
+        return '<svg width="100%" height="76" viewBox="0 0 300 76" xmlns="http://www.w3.org/2000/svg"></svg>'
+
+    pontos = [
+        (65, 52, "#FFB800", 6),
+        (130, 26, "#EDEDED", 5),
+        (185, 48, "#EDEDED", 5),
+        (235, 30, "#3C6FA8", 4.5),
+        (95, 30, "#B94A3C", 4),
+        (155, 60, "#6D4FA8", 4),
+    ]
+    conexoes = [(0, 1), (1, 2), (2, 3), (0, 4), (1, 5)]
+
+    svg_linhas = "".join(
+        f'<line x1="{pontos[i][0]}" y1="{pontos[i][1]}" x2="{pontos[j][0]}" y2="{pontos[j][1]}" stroke="#3A3A40" stroke-width="1.5" />'
+        for i, j in conexoes
+    )
+    svg_pontos = "".join(
+        f'<circle cx="{p[0]}" cy="{p[1]}" r="{p[3]}" fill="{p[2]}" stroke="#18181A" stroke-width="1.5" />'
+        for p in pontos
+    )
+    return f'''
+    <svg width="100%" height="76" viewBox="0 0 300 76" xmlns="http://www.w3.org/2000/svg" style="display:block; overflow:visible;">
+        {svg_linhas}
+        {svg_pontos}
+    </svg>
+    '''
+
+
+# =========================================================================
+# PONTE DO GRAFO COM VIS.JS E POSTMESSAGE
+# =========================================================================
+def instalar_ponte_grafo_global():
+    ui.add_body_html("""
+    <script>
+    (function() {
+        window.__lcfoGraphIframes = window.__lcfoGraphIframes || {};
+
+        window.lcfoRegistrarGrafoIframe = function(chave, iframeId, initialPayloadUrl) {
+            const el = document.getElementById(iframeId);
+            if (el) {
+                window.__lcfoGraphIframes[chave] = { el: el, initialPayloadUrl: initialPayloadUrl, sent: false };
+            }
+        };
+
+        if (window.__lcfoBridgeInstalado) return;
+        window.__lcfoBridgeInstalado = true;
+
+        window.addEventListener('message', function(event) {
+            if (!event.data || !event.data.isStreamlitMessage) return;
+
+            if (event.data.type === 'streamlit:componentReady') {
+                for (const chave in window.__lcfoGraphIframes) {
+                    const registro = window.__lcfoGraphIframes[chave];
+                    if (registro.el && registro.el.contentWindow === event.source && !registro.sent) {
+                        registro.sent = true;
+                        event.source.postMessage({ type: 'streamlit:render_url', url: registro.initialPayloadUrl }, '*');
+                    }
+                }
+                return;
+            }
+
+            if (event.data.type !== 'streamlit:setComponentValue') return;
+
+            let chaveEncontrada = null;
+            for (const chave in window.__lcfoGraphIframes) {
+                const registro = window.__lcfoGraphIframes[chave];
+                if (registro.el && registro.el.contentWindow === event.source) { chaveEncontrada = chave; break; }
+            }
+            if (!chaveEncontrada) return;
+
+            const bridge = document.getElementById('lcfo-graph-bridge');
+            if (!bridge) return;
+            bridge.dispatchEvent(new CustomEvent('graph-message', {
+                detail: JSON.stringify({ key: chaveEncontrada, value: event.data.value })
+            }));
+        });
+    })();
+    </script>
+    """)
+
+def instalar_resize_notas_global():
+    ui.add_body_html("""
+    <script>
+    (function() {
+        window.lcfoRegistrarNotasResize = function(panelId, handleId) {
+            window.__lcfoNotesResizeTarget = { panelId: panelId, handleId: handleId };
+        };
+
+        if (window.__lcfoNotesResizeInit) return;
+        window.__lcfoNotesResizeInit = true;
+
+        let resizing = false;
+        document.addEventListener('mousedown', function(e) {
+            const target = window.__lcfoNotesResizeTarget;
+            if (!target) return;
+            const handle = document.getElementById(target.handleId);
+            if (!handle) return;
+            if (e.target === handle || handle.contains(e.target)) {
+                resizing = true;
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            }
+        });
+        document.addEventListener('mousemove', function(e) {
+            if (!resizing) return;
+            const target = window.__lcfoNotesResizeTarget;
+            if (!target) return;
+            const panel = document.getElementById(target.panelId);
+            if (!panel) return;
+            const rect = panel.getBoundingClientRect();
+            const newWidth = Math.max(280, Math.min(720, rect.right - e.clientX));
+            panel.style.width = newWidth + 'px';
+            panel.style.flexBasis = newWidth + 'px';
+        });
+        document.addEventListener('mouseup', function() {
+            if (resizing) { resizing = false; document.body.style.userSelect = ''; }
+        });
+    })();
+    </script>
+    """)
+
+def instalar_resize_sidebar_global():
+    ui.add_body_html("""
+    <script>
+    (function() {
+        window.lcfoRegistrarSidebarResize = function(panelId, handleId) {
+            window.__lcfoSidebarResizeTarget = { panelId: panelId, handleId: handleId };
+        };
+
+        if (window.__lcfoSidebarResizeInit) return;
+        window.__lcfoSidebarResizeInit = true;
+
+        let resizing = false;
+        document.addEventListener('mousedown', function(e) {
+            const target = window.__lcfoSidebarResizeTarget;
+            if (!target) return;
+            const handle = document.getElementById(target.handleId);
+            if (!handle) return;
+            if (e.target === handle || handle.contains(e.target)) {
+                resizing = true;
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            }
+        });
+        document.addEventListener('mousemove', function(e) {
+            if (!resizing) return;
+            const target = window.__lcfoSidebarResizeTarget;
+            if (!target) return;
+            const panel = document.getElementById(target.panelId);
+            if (!panel) return;
+            const rect = panel.getBoundingClientRect();
+            const newWidth = Math.max(220, Math.min(520, e.clientX - rect.left));
+            panel.style.width = newWidth + 'px';
+        });
+        document.addEventListener('mouseup', function() {
+            if (resizing) { resizing = false; activeDrawer = null; document.body.style.userSelect = ''; }
+        });
+    })();
+    </script>
+    """)
+
+def instalar_bloqueio_atalhos_navegador():
+    ui.add_body_html("""
+    <script>
+    document.addEventListener('keydown', function(e) {
+        const k = e.key.toLowerCase();
+        if ((e.ctrlKey || e.metaKey) && ['j', 'b', 'l'].includes(k)) {
+            e.preventDefault();
+        }
+    }, true);
+    </script>
+    """)
+
+class GrafoBidirecionalNiceGUI:
+    def __init__(self, chave: str):
+        self.chave = chave
+        self.sufixo_seguro = re.sub(r'[^a-zA-Z0-9_-]', '_', chave)
+        self.iframe_id = f"grafo-iframe-{self.sufixo_seguro}-{uuid.uuid4().hex[:6]}"
+
+    def _gravar_payload_e_obter_url(self, payload: Dict[str, Any]) -> str:
+        caminho_arquivo = _DIR_PAYLOADS_GRAFO / f"{self.sufixo_seguro}.json"
+        with open(caminho_arquivo, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        cache_bust = uuid.uuid4().hex[:8]
+        return f"/lcfo_grafo_assets/_payloads/{self.sufixo_seguro}.json?v={cache_bust}"
+
+    def render(self, payload: Dict[str, Any]):
+        cache_bust = uuid.uuid4().hex[:8]
+        ui.html(
+            f'<iframe id="{self.iframe_id}" src="/lcfo_grafo_assets/index.html?v={cache_bust}" '
+            f'style="position:absolute; inset:0; width:100%; height:100%; border:none; display:block;"></iframe>',
+            sanitize=False
+        ).classes('absolute inset-0 w-full h-full')
+        payload_url = self._gravar_payload_e_obter_url(payload)
+        ui.run_javascript(
+            f"window.lcfoRegistrarGrafoIframe('{self.chave}', '{self.iframe_id}', {json.dumps(payload_url)});"
+        )
+        return self
+
+    def enviar_atualizacao(self, payload: Dict[str, Any]):
+        payload_url = self._gravar_payload_e_obter_url(payload)
+        payload_url_json = json.dumps(payload_url)
+        ui.run_javascript(f"""
+            (function() {{
+                const el = document.getElementById('{self.iframe_id}');
+                if (el && el.contentWindow) {{
+                    el.contentWindow.postMessage({{ type: 'streamlit:render_url', url: {payload_url_json} }}, '*');
+                }}
+            }})();
+        """)
+
+    def focar_no(self, node_id: str):
+        """
+        Aplica foco/inspeção num nó já presente e renderizado no grafo, sem
+        regravar o payload em disco nem refazer o fetch no iframe — só uma
+        mensagem pequena via postMessage. Antes, focar uma entidade pela
+        sidebar refazia o payload inteiro (montar_payload + gravação em
+        arquivo + fetch), reconstruindo algo que já estava lá só para
+        aplicar destaque num nó que o grafo já conhecia — introduzindo uma
+        latência de rede perceptível sem necessidade.
+        """
+        node_id_json = json.dumps(node_id)
+        ui.run_javascript(f"""
+            (function() {{
+                const el = document.getElementById('{self.iframe_id}');
+                if (el && el.contentWindow) {{
+                    el.contentWindow.postMessage({{ type: 'streamlit:focus_node', nodeId: {node_id_json} }}, '*');
+                }}
+            }})();
+        """)
+
+    def sincronizar_selecao(self, ids):
+        ids_seguros = json.dumps(list(ids)[-6:])
+        ui.run_javascript(f"""
+            (function() {{
+                const el = document.getElementById('{self.iframe_id}');
+                if (el && el.contentWindow) {{
+                    el.contentWindow.postMessage({{ type: 'streamlit:selection', ids: {ids_seguros} }}, '*');
+                }}
+            }})();
+        """)
+
+# =========================================================================
+# ESTADO DE SESSÃO
+# =========================================================================
+class SessionState:
+    def __init__(self):
+        self.tela_ativa = "Casos"
+        self.caso_ativo_id: Optional[str] = None
+        self.sketch_ativo_id: Optional[str] = None
+        self.subtela_caso = "overview"
+        self.mostrar_notas = False
+        self.mostrar_form_nova_analise = False
+        self.sidebar_visivel = True
+        self.dados_descoberta: Optional[Dict[str, Any]] = None
+        self.entidade_foco: Optional[str] = None
+        self.layout_por_caso: Dict[str, str] = {}
+        self.nos_enriquecidos: Dict[str, Dict[str, Any]] = {}
+        self.selecao_entidades: Dict[str, Set[str]] = {}
+        self.contexto_grafo_ativo: Dict[str, Dict[str, Any]] = {}
+
+        self.aba_painel_lateral = "Entities"
+        self.filtro_tipo_entidade = "TODOS"
+        self.painel_unico = "Grafo de Vínculos"
+
+        self.cockpit_ativo = False
+        self.cockpit_proporcao = 50.0
+        self.painel_esquerdo = "Grafo de Vínculos"
+        self.painel_direito = "Radar Territorial (Mapa)"
+
+        self.filtro_status_dash = "Todos"
+        self.filtro_batismo_dash = "Todos"
+        self.filtro_risco_dash = "Todos"
+        self.modo_visualizacao_casos = "Grade"
+        self.termo_busca_dash = ""
+        self.municipio_foco_funil: Optional[str] = None
+
+# =========================================================================
+# CSS GLOBAL — NEUTRALIZAÇÃO TOTAL QUASAR & DENSIDADE FORENSE
+# =========================================================================
+ui.add_head_html("""
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0" />
+<style>
+    :root, body, .q-dark {
+        --background: #121214;
+        --card: #18181A;
+        --card-foreground: #EDEDED;
+        --popover: #18181A;
+        --popover-foreground: #EDEDED;
+        --muted: #222225;
+        --muted-foreground: #71717A;
+        --border: #2B2B2F;
+        --input: #2B2B2F;
+        --primary: #FF7300;
+        --primary-foreground: #FFFFFF;
+        --ring: rgba(255, 115, 0, 0.4);
+
+        --bg-main: #121214;
+        --bg-surface: #18181A;
+        --bg-input: #222225;
+        --border-subtle: #2B2B2F;
+        --primary-orange: #FF7300;
+        --text-main: #EDEDED;
+
+        --q-primary: #FF7300 !important;
+        --q-primary-rgb: 255, 115, 0 !important;
+        --q-secondary: #222225 !important;
+        --q-accent: #FF7300 !important;
+        --q-info: #71717A !important;
+    }
+
+    body {
+        background-color: var(--bg-main) !important;
+        color: var(--text-main) !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        overflow: hidden !important;
+        margin: 0; padding: 0;
+        -webkit-font-smoothing: antialiased;
+        letter-spacing: -0.01em;
+    }
+
+    html, body, #app, .nicegui-content, .q-page, .q-page-container, .q-layout {
+        height: 100% !important;
+    }
+    .nicegui-content { padding: 0 !important; }
+
+    .q-header {
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+        background-color: rgba(18, 18, 20, 0.98) !important;
+        border-bottom: 1px solid var(--border-subtle) !important;
+        display: flex !important;
+        align-items: center !important;
+        padding: 0 16px !important;
+    }
+    .q-header .q-btn {
+        height: 28px !important;
+        min-height: 28px !important;
+        padding: 0 8px !important;
+        font-size: 12px !important;
+        color: #CCCCCC !important;
+    }
+    .q-header .q-btn:hover {
+        color: #FFFFFF !important;
+        background-color: #222225 !important;
+    }
+
+    .top-search-btn {
+        height: 28px !important;
+        min-height: 28px !important;
+        line-height: 26px !important;
+        padding: 0 14px !important;
+        font-size: 11px !important;
+        color: #888888 !important;
+        background-color: #18181A !important;
+        border: 1px solid #2B2B2F !important;
+        border-radius: 999px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    .top-search-btn:hover {
+        border-color: #44444A !important;
+        color: #EDEDED !important;
+    }
+
+    .text-primary:not(.text-orange):not(.lcfo-dock-btn-active) {
+        color: #CCCCCC !important;
+    }
+    .bg-primary {
+        background-color: #FF7300 !important;
+    }
+    .q-focus-helper {
+        background: currentColor !important;
+        opacity: 0 !important;
+    }
+    ::selection {
+        background: rgba(255, 115, 0, 0.3) !important;
+        color: #FFFFFF !important;
+    }
+
+    .q-checkbox__inner--truthy .q-checkbox__bg {
+        background: #FF7300 !important;
+        border-color: #FF7300 !important;
+    }
+    .q-checkbox__bg {
+        border-radius: 4px !important;
+        border: 1px solid var(--border-subtle) !important;
+        background: rgba(34, 34, 37, 0.4) !important;
+        width: 15px !important;
+        height: 15px !important;
+    }
+    .q-checkbox__inner:before { display: none !important; }
+
+    .q-toggle {
+        height: 28px !important;
+        min-height: 28px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+    }
+    .q-toggle__inner:before { display: none !important; }
+    .q-toggle__inner {
+        position: relative !important;
+        width: 32px !important;
+        height: 18px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    .q-toggle__track {
+        position: absolute !important;
+        top: 50% !important;
+        left: 0 !important;
+        margin-top: -9px !important;
+        height: 18px !important;
+        width: 32px !important;
+        border-radius: 999px !important;
+        background: #2B2B2F !important;
+        opacity: 1 !important;
+    }
+    .q-toggle__inner--truthy .q-toggle__track {
+        background: #FF7300 !important;
+    }
+    .q-toggle__thumb {
+        position: absolute !important;
+        top: 50% !important;
+        left: 2px !important;
+        margin-top: -7px !important;
+        height: 14px !important;
+        width: 14px !important;
+        background: #FFFFFF !important;
+        border-radius: 50% !important;
+    }
+    .q-toggle__inner--truthy .q-toggle__thumb {
+        left: 16px !important;
+    }
+
+    .q-btn--dense .q-icon, .q-btn--dense i {
+        font-size: 15px !important;
+    }
+
+    .q-tooltip {
+        background: #18181A !important;
+        color: #EDEDED !important;
+        border: 1px solid #2B2B2F !important;
+        font-size: 11px !important;
+        padding: 4px 8px !important;
+        border-radius: 6px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.6) !important;
+    }
+
+    .lcfo-dock-btn {
+        width: 32px !important;
+        height: 32px !important;
+        min-width: 32px !important;
+        min-height: 32px !important;
+        padding: 0 !important;
+        border-radius: 6px !important;
+        color: #A1A1AA !important;
+        background: transparent !important;
+        border: 1px solid transparent !important;
+    }
+    .lcfo-dock-btn .q-icon, .lcfo-dock-btn i {
+        font-size: 15px !important;
+        color: #A1A1AA !important;
+    }
+    .lcfo-dock-btn:hover {
+        background: #27272A !important;
+        color: #FFFFFF !important;
+        border-color: #3F3F46 !important;
+    }
+    .lcfo-dock-btn:hover .q-icon, .lcfo-dock-btn:hover i {
+        color: #FFFFFF !important;
+    }
+    .lcfo-dock-btn-active, .lcfo-dock-btn.lcfo-dock-btn-active {
+        border-radius: 6px !important;
+        background: rgba(255, 115, 0, 0.15) !important;
+        border-color: rgba(255, 115, 0, 0.4) !important;
+        color: #FF7300 !important;
+    }
+    .lcfo-dock-btn-active .q-icon, .lcfo-dock-btn-active i {
+        color: #FF7300 !important;
+    }
+
+    .lcfo-dossie-btn {
+        width: 34px !important;
+        height: 34px !important;
+        min-width: 34px !important;
+        color: #A1A1AA !important;
+        background: transparent !important;
+        border: 1px solid rgba(255, 255, 255, 0.10) !important;
+        border-radius: 8px !important;
+    }
+    .lcfo-dossie-btn .q-icon, .lcfo-dossie-btn i {
+        font-size: 16px !important;
+        color: #A1A1AA !important;
+    }
+    .lcfo-dossie-btn:hover {
+        background: #27272A !important;
+        color: #FFFFFF !important;
+        border-color: rgba(255, 255, 255, 0.25) !important;
+    }
+    .lcfo-dossie-btn:hover .q-icon, .lcfo-dossie-btn:hover i {
+        color: #FFFFFF !important;
+    }
+
+    .q-field--outlined .q-field__control {
+        border-radius: 6px !important;
+        background: #18181A !important;
+        border-color: #2B2B2F !important;
+    }
+    .q-field--outlined.q-field--focused .q-field__control {
+        border-color: #FF7300 !important;
+        box-shadow: 0 0 0 2px rgba(255, 115, 0, 0.25) !important;
+    }
+    .q-field__native, .q-field__input {
+        color: #EDEDED !important;
+        font-size: 12px !important;
+    }
+    .q-field--dense .q-field__control, .q-field--dense .q-field__marginal {
+        height: 30px !important;
+        min-height: 30px !important;
+    }
+
+    .q-table thead tr, .q-table tbody td {
+        height: 32px !important;
+    }
+    .q-table th {
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        color: #71717A !important;
+        border-bottom: 1px solid #2B2B2F !important;
+        padding: 6px 10px !important;
+        text-transform: uppercase !important;
+    }
+    .q-table td {
+        font-size: 11px !important;
+        color: #EDEDED !important;
+        border-bottom: 1px solid #1F1F23 !important;
+        padding: 6px 10px !important;
+    }
+    .q-table tbody tr:hover {
+        background: rgba(34, 34, 37, 0.5) !important;
+    }
+
+    .q-splitter__separator {
+        width: 1px !important;
+        background: #2B2B2F !important;
+        position: relative !important;
+    }
+    .q-splitter__separator:hover {
+        background: #FF7300 !important;
+    }
+    .q-splitter__separator::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 3px;
+        height: 32px;
+        pointer-events: none;
+        background-image: radial-gradient(circle, #55555A 1.4px, transparent 1.4px);
+        background-size: 3px 7px;
+        background-repeat: repeat-y;
+        background-position: center;
+    }
+
+    .custom-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #2B2B2F; border-radius: 999px; }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: #FF7300; }
+
+    .lcfo-panel {
+        background: rgba(24, 24, 26, 0.92) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 10px !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+    }
+
+    .hud-compact-row {
+        border-left: 3px solid var(--primary-orange) !important;
+        padding: 7px 16px;
+        display: flex; align-items: center; justify-content: center;
+        gap: 10px 14px; flex-wrap: wrap;
+    }
+    .badge-pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; white-space: nowrap; }
+
+    .viewport-header {
+        background: rgba(18, 18, 20, 0.95);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border-subtle);
+        height: 32px;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0 10px; z-index: 30;
+    }
+
+    .parecer-card { background: #18181A; border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+    .foco-lateral-card {
+        background: #222225; border: 1px solid var(--primary-orange); border-left: 3px solid var(--primary-orange);
+        border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; font-size: 12px;
+    }
+    .selecao-lateral-card { background: #222225; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 12px; }
+
+    .q-editor {
+        background-color: #18181A !important;
+        border: 1px solid #2B2B2F !important;
+        border-radius: 8px !important;
+    }
+    .q-editor__toolbar {
+        background-color: #141416 !important;
+        border-bottom: 1px solid #2B2B2F !important;
+    }
+    .q-editor__content {
+        color: #EDEDED !important;
+        font-size: 12px !important;
+        min-height: 110px !important;
+    }
+
+    .lcfo-sketch-card {
+        background: #18181A;
+        border: 1px solid #2B2B2F;
+        border-radius: 12px;
+        overflow: hidden;
+        transition: border-color 0.15s;
+    }
+    .lcfo-sketch-card:hover {
+        border-color: rgba(255, 115, 0, 0.5);
+    }
+</style>
+""", shared=True)
+
+def _sanitizar_df_para_tabela(df: pd.DataFrame) -> pd.DataFrame:
+    return df.astype(object).where(pd.notnull(df), None)
+
+# =========================================================================
+# PÁGINA PRINCIPAL REATIVA
+# =========================================================================
+@ui.page('/')
+def main():
+    st = SessionState()
+    instalar_ponte_grafo_global()
+    instalar_resize_notas_global()
+    instalar_resize_sidebar_global()
+    instalar_bloqueio_atalhos_navegador()
+
+    # -------------------------------------------------------------------
+    # DISPATCHER DE MENSAGENS VINDAS DO IFRAME DO GRAFO (JS -> Python)
+    # -------------------------------------------------------------------
+    def tratar_reset_layout(valor: Dict[str, Any], contexto: Dict[str, Any]):
+        if not contexto["eh_oficial"]:
+            return
+        alvo_reset = contexto.get("chave_layout") or contexto["identificador_caso"]
+        resetar_layout_caso(alvo_reset)
+        st.layout_por_caso[contexto["identificador_caso"]] = "organico"
+        novo_payload = contexto["montar_payload"]("organico")
+        contexto["grafo"].enviar_atualizacao(novo_payload)
+        ui.notify("Layout recalculado (Orgânico).")
+
+    def tratar_enrich(valor: Dict[str, Any], contexto: Dict[str, Any]):
+        if not TEM_ENRICH_ENGINE:
+            ui.notify("Módulo enrich_engine.py não localizado.")
+            return
+        tipo_entidade = valor.get("tipoEntidade", "")
+        node_id = valor.get("nodeId", "")
+        valor_bruto = node_id.split("_", 1)[1] if "_" in node_id else valor.get("valor", "")
+        resultado = enriquecer_entidade_local(tipo_entidade, valor_bruto)
+        if resultado.get("total_encontrado", 0) == 0:
+            ui.notify("Nenhum vínculo adicional localizado no acervo local.")
+            return
+
+        balde = st.nos_enriquecidos.setdefault(contexto["identificador_caso"], {"nodes": {}, "edges": {}})
+        novos_efetivos = 0
+        for n in resultado.get("novos_nos", []):
+            if n["id"] not in balde["nodes"]:
+                balde["nodes"][n["id"]] = n
+                novos_efetivos += 1
+        for e_novo in resultado.get("novas_arestas", []):
+            balde["edges"][e_novo["id"]] = e_novo
+
+        if novos_efetivos > 0:
+            if contexto["identificador_caso"] != "DESCOBERTA":
+                salvar_nos_extras_sketch(contexto["identificador_caso"], balde["nodes"], balde["edges"])
+            ui.notify(f"Enrich: {novos_efetivos} nova(s) entidade(s) incorporada(s).")
+            layout_atual = st.layout_por_caso.get(contexto["identificador_caso"], "organico")
+            novo_payload = contexto["montar_payload"](layout_atual)
+            contexto["grafo"].enviar_atualizacao(novo_payload)
+            contexto["sidebar_refresh"]()
+        else:
+            ui.notify("As entidades relacionadas já estão presentes.")
+
+    def _ao_receber_mensagem_grafo(e):
+        raw = e.args
+        if isinstance(raw, list) and raw:
+            raw = raw[0]
+        if isinstance(raw, dict) and "detail" in raw:
+            raw = raw["detail"]
+        try:
+            dados = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return
+        if not isinstance(dados, dict):
+            return
+
+        chave = dados.get("key")
+        valor = dados.get("value") or {}
+
+        contexto = None
+        for ctx in st.contexto_grafo_ativo.values():
+            if ctx.get("chave_grafo") == chave:
+                contexto = ctx
+                break
+        if not contexto:
+            return
+
+        tipo_ev = valor.get("tipo")
+        if tipo_ev == "node_click":
+            st.entidade_foco = valor.get("nodeId")
+            contexto["sidebar_refresh"]()
+        elif tipo_ev == "save_layout_positions":
+            layout = valor.get("layout", "organico")
+            st.layout_por_caso[contexto["identificador_caso"]] = layout
+            posicoes = valor.get("positions")
+            if posicoes and layout == "arvore":
+                alvo_salvar = contexto.get("chave_layout") or contexto["identificador_caso"]
+                salvar_posicoes_layout_caso(alvo_salvar, posicoes, layout_tipo="arvore")
+        elif tipo_ev == "reset_layout_request":
+            tratar_reset_layout(valor, contexto)
+        elif tipo_ev == "enrich_request":
+            tratar_enrich(valor, contexto)
+        elif tipo_ev == "clear_selection":
+            # Qualquer clique no canvas (nó ou espaço vazio) avisa o Python
+            # para esvaziar a seleção por checkbox da sidebar — mesmo
+            # comportamento de "clicar fora limpa" que já existia para o
+            # foco de entidade única, agora também para a seleção múltipla.
+            sel = st.selecao_entidades.get(contexto["identificador_caso"])
+            if sel:
+                sel.clear()
+            contexto["sidebar_refresh"]()
+        elif tipo_ev == "sync_selection_from_canvas":
+            # Seleção feita direto no canvas (retângulo, laço, Ctrl+A ou
+            # shift+click) — sincroniza de volta para a sidebar: o card
+            # "X selecionado(s)" e o Set st.selecao_entidades passam a
+            # refletir o que foi marcado no grafo, não só os checkboxes da
+            # lista Entities.
+            ids_recebidos = valor.get("ids") or []
+            sel = st.selecao_entidades.setdefault(contexto["identificador_caso"], set())
+            sel.clear()
+            sel.update(ids_recebidos)
+            contexto["sidebar_refresh"]()
+
+    bridge = ui.element('div').props('id=lcfo-graph-bridge').style('display:none')
+    bridge.on('graph-message', _ao_receber_mensagem_grafo, args=['detail'])
+
+    # -------------------------------------------------------------------
+    # ROTEAMENTO
+    # -------------------------------------------------------------------
+    def abrir_caso_overview(cid: str):
+        cid_resolvido = resolver_dossie_do_cluster(cid)
+        st.caso_ativo_id = cid_resolvido
+        st.sketch_ativo_id = None
+        st.subtela_caso = "overview"
+        st.dados_descoberta = None
+        st.entidade_foco = None
+        st.cockpit_ativo = False
+        dlg_palette.close()
+        navbar_breadcrumbs.refresh()
+        navbar_acoes.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def abrir_mesa_sketch(id_sketch: str):
+        sketch = carregar_sketch(id_sketch)
+        if not sketch:
+            ui.notify("Sketch não encontrado.", type="negative")
+            return
+        if id_sketch not in st.nos_enriquecidos:
+            nos_extra, arestas_extra = carregar_nos_extras_sketch(id_sketch)
+            st.nos_enriquecidos[id_sketch] = {"nodes": nos_extra, "edges": arestas_extra}
+
+        st.caso_ativo_id = sketch["id_caso"]
+        st.sketch_ativo_id = id_sketch
+        st.subtela_caso = "mesa"
+        st.painel_esquerdo = "Grafo de Vínculos"
+        st.painel_unico = "Grafo de Vínculos"
+        st.entidade_foco = None
+        navbar_breadcrumbs.refresh()
+        navbar_acoes.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def voltar_ao_dashboard():
+        st.caso_ativo_id = None
+        st.sketch_ativo_id = None
+        st.dados_descoberta = None
+        st.contexto_grafo_ativo = {}
+        st.cockpit_ativo = False
+        navbar_breadcrumbs.refresh()
+        navbar_acoes.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def abrir_descoberta(resumo, df, ents):
+        st.dados_descoberta = {"resumo": resumo, "df": df, "entidades": ents}
+        st.caso_ativo_id = None
+        st.sketch_ativo_id = None
+        st.subtela_caso = "mesa"
+        st.painel_esquerdo = "Grafo de Vínculos"
+        st.painel_unico = "Grafo de Vínculos"
+        st.cockpit_ativo = False
+        navbar_breadcrumbs.refresh()
+        navbar_acoes.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def alternar_notas():
+        st.mostrar_notas = not st.mostrar_notas
+        navbar_acoes.refresh()
+        workspace.refresh()
+
+    def alternar_sidebar():
+        st.sidebar_visivel = not st.sidebar_visivel
+        sidebar_container.refresh()
+
+    # -------------------------------------------------------------------
+    # AÇÕES DE INGESTÃO
+    # -------------------------------------------------------------------
+    def executar_ingestao_bl(caminho: str):
+        _, qtd, msg, _ = carregar_arquivos_para_sqlite(caminho, forcar_releitura=False)
+        DADOS.recarregar()
+        ui.notify(f"{qtd:,} assistências inseridas." if qtd > 0 else (msg or "Base já atualizada."))
+        dlg_ingestao.close()
+        navbar_breadcrumbs.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def executar_ingestao_cr(caminho: str):
+        _, qtd, msg, _ = carregar_criacoes_diarias_para_sqlite(caminho, forcar_releitura=False)
+        DADOS.recarregar()
+        ui.notify(f"{qtd:,} registros de criação ingeridos." if qtd > 0 else (msg or "Nenhum arquivo novo."))
+        dlg_ingestao.close()
+        navbar_breadcrumbs.refresh()
+        sidebar_container.refresh()
+        workspace.refresh()
+
+    def executar_reparo_mojibake():
+        res = reparar_mojibake_historico()
+        DADOS.recarregar()
+        ui.notify(f"{sum(res.values())} registros corrigidos.")
+        dlg_ingestao.close()
+        workspace.refresh()
+
+    # -------------------------------------------------------------------
+    # DIALOG: COMMAND PALETTE (Ctrl+J)
+    # -------------------------------------------------------------------
+    with ui.dialog() as dlg_palette, ui.card().classes('w-[520px] bg-[#18181A] border border-[#2B2B2F] p-0 rounded-xl shadow-2xl overflow-hidden'):
+        with ui.row().classes('h-11 border-b border-[#2B2B2F] px-3 items-center gap-2 w-full'):
+            ui.icon('search', size='15px').classes('text-[#71717A]')
+            ipt_pal = ui.input(placeholder='Type a command or search investigations...').props('dense borderless autofocus').classes('flex-1 text-white text-xs bg-transparent')
+
+        box_pal_res = ui.column().classes('w-full gap-0.5 p-1.5 max-h-72 overflow-y-auto custom-scroll')
+
+        def filtrar_palette(termo_bruto: str):
+            termo = (termo_bruto or "").strip().upper()
+            box_pal_res.clear()
+            if not termo:
+                return
+            with box_pal_res:
+                encontrados = 0
+                ui.label('INVESTIGAÇÕES').classes('text-[10px] font-semibold text-[#71717A] tracking-wider px-2.5 py-1 uppercase')
+                for c in DADOS.cluster_info[:100]:
+                    nome_c = (DADOS.casos_cadastrados.get(c['id'], {}).get('nome') or c['hub_label']).upper()
+                    if termo in nome_c or termo in c['id']:
+                        with ui.row().classes('w-full items-center justify-between p-2 rounded-md hover:bg-[#222225] cursor-pointer transition-colors').on('click', lambda cid=c['id']: abrir_caso_overview(cid)):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('folder', size='14px').classes('text-[#71717A]')
+                                ui.label(f"{nome_c[:28]} ({c['id']})").classes('text-xs text-gray-200 font-medium')
+                            ui.label('Abrir').classes('text-[10px] text-[#71717A] tracking-widest uppercase')
+                        encontrados += 1
+                        if encontrados >= 8:
+                            break
+        ipt_pal.on_value_change(lambda e: filtrar_palette(e.value))
+
+    # -------------------------------------------------------------------
+    # DIALOG: GESTÃO DE BASES & INGESTÃO
+    # -------------------------------------------------------------------
+    with ui.dialog() as dlg_ingestao, ui.card().classes('w-[560px] bg-[#18181A] border border-[#2B2B2F] p-5 rounded-xl shadow-2xl'):
+        ui.label('Gestão e Ingestão de Dados').classes('text-sm font-bold text-[#FF7300] uppercase tracking-wider mb-3')
+        with ui.expansion('Base Blacklist (.xlsx / .csv)', icon='folder').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg mb-2'):
+            pasta_padrao_bl = str(CAMINHO_REDE_OFICIAL) if Path(CAMINHO_REDE_OFICIAL).exists() else str(PASTA_LOCAL_BLACKLIST)
+            caminho_bl = ui.input(value=pasta_padrao_bl, label='Caminho:').props('dense outlined').classes('w-full text-xs my-2')
+            ui.button('Ingerir Arquivos Blacklist', on_click=lambda: executar_ingestao_bl(caminho_bl.value)).classes('w-full bg-[#FF7300] text-white text-xs font-bold')
+
+        with ui.expansion('Criações Diárias (.xlsx / .csv)', icon='update').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg mb-2'):
+            pasta_padrao_cr = str(CAMINHO_REDE_CRIACAO) if Path(CAMINHO_REDE_CRIACAO).exists() else str(PASTA_LOCAL_CRIACAO)
+            caminho_cr = ui.input(value=pasta_padrao_cr, label='Caminho:').props('dense outlined').classes('w-full text-xs my-2')
+            ui.button('Ingerir Criações Diárias', on_click=lambda: executar_ingestao_cr(caminho_cr.value)).classes('w-full bg-[#FF7300] text-white text-xs font-bold')
+
+        with ui.expansion('Manutenção & Integridade', icon='build').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg'):
+            ui.label('Corrige codificação corrompida (mojibake) em todo o acervo.').classes('text-xs text-gray-400 mb-2')
+            ui.button('Reparar Codificação Mojibake', on_click=executar_reparo_mojibake).classes('w-full bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs')
+
+    # -------------------------------------------------------------------
+    # ATALHOS DE TECLADO
+    # -------------------------------------------------------------------
+    def _tratar_atalho_teclado(e):
+        if not e.action.keydown:
+            return
+        if not (e.modifiers.ctrl or e.modifiers.meta):
+            return
+        if e.key == 'j':
+            dlg_palette.open()
+        elif e.key == 'b':
+            alternar_sidebar()
+        elif e.key == 'l':
+            alternar_notas()
+
+    ui.keyboard(on_key=_tratar_atalho_teclado, ignore=[])
+
+    # -------------------------------------------------------------------
+    # TOP NAVBAR (44px)
+    # -------------------------------------------------------------------
+    with ui.header().classes('h-[44px] leading-none bg-[#121214]/98 backdrop-blur-md border-b border-[#2B2B2F] px-4 flex items-center z-50'):
+        with ui.row().classes('items-center gap-1.5 flex-1 justify-start h-full no-wrap'):
+            ui.icon('hub', size='16px').classes('text-[#FF7300]')
+            ui.label('LCFO').classes('font-black text-sm text-[#FF7300] cursor-pointer tracking-wider leading-none').on('click', voltar_ao_dashboard)
+            ui.label('/').classes('text-[#71717A] text-xs font-light leading-none')
+
+            @ui.refreshable
+            def navbar_breadcrumbs():
+                if st.caso_ativo_id:
+                    inf = DADOS.casos_cadastrados.get(st.caso_ativo_id, {})
+                    nm = inf.get('nome') or st.caso_ativo_id
+                    with ui.button(f"{nm[:14]} ⌵", color=None).props('flat dense no-caps').classes('text-xs text-gray-300 hover:text-white leading-none h-7 px-2'):
+                        with ui.menu().classes(f'{CLASSE_MENU_PADRAO} max-h-64 overflow-y-auto custom-scroll min-w-[220px]'):
+                            for c in DADOS.cluster_info[:50]:
+                                n_lbl = DADOS.casos_cadastrados.get(c['id'], {}).get('nome') or c['hub_label'][:20]
+                                with ui.menu_item(on_click=lambda cid=c['id']: abrir_caso_overview(cid)).classes(
+                                    'text-xs rounded-md hover:bg-[#222225] flex items-center gap-2'
+                                ):
+                                    ui.icon('folder', size='14px').classes('text-[#71717A]')
+                                    ui.label(n_lbl).classes('truncate flex-1 text-gray-200')
+                    ui.label('/').classes('text-[#71717A] text-xs font-light leading-none')
+
+                    rotulo_secundario = "Overview"
+                    if st.sketch_ativo_id:
+                        sk_cur = carregar_sketch(st.sketch_ativo_id)
+                        if sk_cur:
+                            rotulo_secundario = sk_cur["nome_sketch"]
+
+                    with ui.button(f"{rotulo_secundario[:16]} ⌵", color=None).props('flat dense no-caps').classes('text-xs text-[#FF7300] leading-none h-7 px-2'):
+                        with ui.menu().classes(f'{CLASSE_MENU_PADRAO} min-w-[220px]'):
+                            with ui.menu_item(on_click=lambda: (
+                                setattr(st, 'subtela_caso', 'overview'),
+                                setattr(st, 'sketch_ativo_id', None),
+                                sidebar_container.refresh(),
+                                workspace.refresh()
+                            )).classes('text-xs rounded-md hover:bg-[#222225] flex items-center gap-2'):
+                                ui.icon('home', size='15px').classes('text-gray-300')
+                                ui.label('Voltar ao Overview').classes('text-gray-200 font-medium')
+
+                            sketches_caso = listar_sketches_do_caso(st.caso_ativo_id)
+                            if sketches_caso:
+                                ui.separator().classes('bg-[#2B2B2F] my-1')
+                                ui.label('Sketches').classes('text-[9px] font-semibold text-[#71717A] px-2.5 py-1 tracking-wider uppercase')
+                                for sk_item in sketches_caso:
+                                    ativo_sk = (st.sketch_ativo_id == sk_item["id_sketch"])
+                                    with ui.menu_item(on_click=lambda sid=sk_item['id_sketch']: abrir_mesa_sketch(sid)).classes(
+                                        f"text-xs rounded-md hover:bg-[#222225] flex items-center gap-2 {'text-[#FF7300] font-semibold' if ativo_sk else 'text-gray-300'}"
+                                    ):
+                                        ui.icon('hub', size='13px').classes('text-[#71717A]')
+                                        ui.label(sk_item["nome_sketch"]).classes('truncate flex-1')
+                else:
+                    ui.label(st.tela_ativa).classes('text-xs font-semibold text-gray-300 leading-none')
+            navbar_breadcrumbs()
+
+        with ui.row().classes('items-center justify-center flex-1 h-full no-wrap'):
+            ui.button('Search LCFO... (Ctrl+J)', icon='search', color=None, on_click=dlg_palette.open).props('dense flat no-caps').classes(
+                'top-search-btn'
+            )
+
+        with ui.row().classes('items-center justify-end gap-3 flex-1 h-full no-wrap'):
+            @ui.refreshable
+            def navbar_acoes():
+                if st.caso_ativo_id and st.subtela_caso == "mesa":
+                    with ui.row().classes('items-center gap-2 h-7 my-auto no-wrap'):
+                        ui.switch('Toggle notes (Ctrl+L)', value=st.mostrar_notas, on_change=lambda e: (
+                            setattr(st, 'mostrar_notas', e.value), workspace.refresh()
+                        )).props('dense color=orange').classes('text-xs text-gray-300 my-0')
+                        ui.separator().props('vertical').classes('bg-[#2B2B2F] mx-1 h-4 self-center')
+                        ui.button(icon='vertical_split', color=None, on_click=lambda: (
+                            setattr(st, 'cockpit_ativo', not st.cockpit_ativo), workspace.refresh()
+                        )).props('flat dense round').classes(
+                            'text-[#FF7300]' if st.cockpit_ativo else 'text-gray-400 hover:text-white'
+                        ).tooltip('Dividir tela (Cockpit)')
+            navbar_acoes()
+
+    # -------------------------------------------------------------------
+    # LEFT RAIL FIXO (56px)
+    # -------------------------------------------------------------------
+    with ui.left_drawer(value=True, fixed=True).props(':width="56"').classes(
+        'w-[56px] bg-[#0F0F10] border-r border-[#2B2B2F] p-2 flex flex-col items-center justify-between z-50'
+    ):
+        with ui.column().classes('items-center gap-2.5 w-full mt-1'):
+            for icone, nome, tip in [
+                ("folder_open", "Casos", "Células e redes da Blacklist"),
+                ("hub", "Base Mestra", "Base Mestra de entidades"),
+                ("warning", "Watchlist", "Watchlist de municípios de risco"),
+                ("dashboard", "Centro de Comando", "Centro de Comando e Radar Territorial"),
+            ]:
+                ativo = (st.tela_ativa == nome and not st.caso_ativo_id)
+                ui.button(icon=icone, color=None, on_click=lambda n=nome: (setattr(st, 'tela_ativa', n), voltar_ao_dashboard())).props(
+                    'flat dense round'
+                ).classes(
+                    f"w-9 h-9 rounded-lg {'bg-[#FF7300]/15 text-[#FF7300]' if ativo else 'text-[#71717A] hover:text-white hover:bg-[#18181A]'}"
+                ).tooltip(tip)
+
+        with ui.column().classes('items-center gap-2 w-full pb-2'):
+            ui.button(icon='storage', color=None, on_click=dlg_ingestao.open).props(
+                'flat dense round'
+            ).classes('w-9 h-9 rounded-lg text-[#71717A] hover:text-white hover:bg-[#18181A]').tooltip('Gestão de bases & ingestão')
+
+            ui.button(icon='menu_open', color=None, on_click=alternar_sidebar).props(
+                'flat dense round'
+            ).classes('w-9 h-9 rounded-lg text-[#71717A] hover:text-[#FF7300] hover:bg-[#18181A]').tooltip('Alternar painel lateral (Ctrl+B)')
+
+    # -------------------------------------------------------------------
+    # DIALOG: EDITAR PARECER JÁ REGISTRADO
+    # -------------------------------------------------------------------
+    def _abrir_edicao_parecer(h: Dict[str, Any], refresh_callback: Callable[[], None]):
+        with ui.dialog() as dlg_ed, ui.card().classes(f'{CLASSE_MENU_PADRAO} w-[560px] p-4'):
+            ui.label('Editar Análise').classes('text-xs font-bold text-[#FF7300] uppercase tracking-wider mb-2')
+            ipt_t = ui.input(label='Título (opcional):', value=h.get('titulo', '')).props('dense outlined').classes('w-full text-xs mb-2')
+            ipt_c = ui.editor(value=h['parecer']).classes('w-full mb-3').props('dense dark')
+
+            def _salvar():
+                atualizar_parecer_historico(h['id'], ipt_t.value or "", ipt_c.value or "")
+                dlg_ed.close()
+                ui.notify("Análise atualizada.")
+                refresh_callback()
+
+            ui.button('Salvar Alterações', on_click=_salvar).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md')
+        dlg_ed.open()
+
+    # -------------------------------------------------------------------
+    # PAINEL DE ANÁLISES / PARECERES TÉCNICOS
+    # -------------------------------------------------------------------
+    def renderizar_painel_analises(identificador_dossie: str, dados_caso_info: Dict[str, Any], refresh_callback: Callable[[], None]):
+        with ui.row().classes('w-full items-center justify-between mb-2'):
+            ui.label('Análises (Pareceres Técnicos)').classes('text-sm font-bold text-gray-200')
+            ui.button('+ Nova', on_click=lambda: (
+                setattr(st, 'mostrar_form_nova_analise', not st.mostrar_form_nova_analise), refresh_callback()
+            )).props('dense').classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-2.5 py-1 rounded-md border border-[#2B2B2F]')
+
+        if st.mostrar_form_nova_analise:
+            ipt_titulo_parecer = ui.input(placeholder='Título da análise (opcional)').props('dense outlined').classes('w-full text-xs mb-2')
+            ui.label('Use @CPF_..., @TEL_... ou @PLACA_... para destacar menções.').classes('text-[11px] text-[#71717A] mb-1')
+
+            ipt_novo_parecer = ui.editor(placeholder='Escreva a análise técnica pericial...').classes('w-full mb-2').props('dense dark')
+
+            def _salvar_parecer():
+                texto = (ipt_novo_parecer.value or "").strip()
+                texto_puro = re.sub(r'<[^>]*>', '', texto).strip()
+                if not texto_puro:
+                    ui.notify("Escreva um parecer antes de salvar.", type="warning")
+                    return
+
+                registrar_parecer(
+                    identificador_dossie,
+                    ipt_titulo_parecer.value or "",
+                    dados_caso_info.get("analista_responsavel", ""),
+                    dados_caso_info.get("status", "Em Investigação"),
+                    texto,
+                )
+                DADOS.recarregar()
+                st.mostrar_form_nova_analise = False
+                ui.notify("Análise registrada.")
+                refresh_callback()
+                sidebar_container.refresh()
+
+            ui.button('Salvar Análise', on_click=_salvar_parecer).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md mb-3')
+
+        historico_notas = carregar_historico_pareceres(identificador_dossie)
+        if historico_notas:
+            for h in historico_notas:
+                with ui.element('div').classes('parecer-card'):
+                    with ui.row().classes('w-full items-start justify-between gap-2'):
+                        with ui.column().classes('gap-0.5 flex-1 min-w-0'):
+                            if h.get('titulo'):
+                                ui.label(h['titulo']).classes('text-sm font-bold text-white truncate')
+                            ui.html(
+                                f"<span style='color:#6C93B0; font-size:11px; font-weight:600;'>{h['data_registro']}</span> • "
+                                f"<span style='color:#C9A66B; font-size:11px;'>Analista: <b>{h['analista'] or 'Sistema'}</b></span> • "
+                                f"<span style='color:#6FA98A; font-size:11px;'>Status: <b>{h['status']}</b></span>"
+                            )
+                        ui.button(icon='edit', color=None).props('flat dense round size=xs').classes(
+                            'text-[#71717A] hover:text-[#FF7300] shrink-0'
+                        ).tooltip('Editar análise').on(
+                            'click', lambda h=h: _abrir_edicao_parecer(h, refresh_callback)
+                        )
+                    ui.html(
+                        f"<div style='color:#CCCCCC; font-size:12px; margin-top:6px; line-height:1.6;'>{formatar_mencoes_forenses(h['parecer'])}</div>"
+                    )
+        else:
+            with ui.element('div').classes('w-full bg-[#18181A] border border-[#2B2B2F] p-4 rounded-lg flex items-center justify-center'):
+                ui.label('Nenhuma análise registrada ainda.').classes('text-xs text-[#71717A]')
+
+    # -------------------------------------------------------------------
+    # MONTAGEM DO PAYLOAD DO GRAFO
+    # -------------------------------------------------------------------
+    def montar_payload_grafo(identificador_caso, tem_cluster, cluster_obj, df_dados, resumo_descoberta, layout_ativo, chave_layout: Optional[str] = None):
+        chave_layout_efetiva = chave_layout or identificador_caso
+        if tem_cluster:
+            vis_nodes, vis_edges = processar_subgrafo_caso(
+                G=DADOS.G, cluster_nodes=cluster_obj["nodes"], filtro_tipos=["telefone", "cpf", "placa"],
+                hub_id=cluster_obj["hub_id"], font_slider=FONT_PADRAO, id_caso=chave_layout_efetiva,
+                espacamento=ESPACAMENTO_PADRAO
+            )
+            hub_id = cluster_obj["hub_id"]
+            if layout_ativo == "arvore":
+                pos_banco = carregar_posicoes_layout_caso(chave_layout_efetiva, layout_tipo="arvore")
+                if pos_banco:
+                    for n in vis_nodes:
+                        if n["id"] in pos_banco:
+                            n["x"] = pos_banco[n["id"]]["x"]
+                            n["y"] = pos_banco[n["id"]]["y"]
+        else:
+            vis_nodes, vis_edges, hub_id = processar_grafo_dataframe(
+                df_dados, alvo_principal=(resumo_descoberta or {}).get("termo_limpo", ""),
+                font_slider=FONT_PADRAO, espacamento=ESPACAMENTO_PADRAO
+            )
+
+        balde = st.nos_enriquecidos.get(identificador_caso, {"nodes": {}, "edges": {}})
+        ids_presentes = {n["id"] for n in vis_nodes}
+        vis_nodes = vis_nodes + [n for nid, n in balde["nodes"].items() if nid not in ids_presentes]
+        ids_arestas = {e.get("id") for e in vis_edges if e.get("id")}
+        vis_edges = vis_edges + [e for eid, e in balde["edges"].items() if eid not in ids_arestas]
+
+        payload = {
+            "nodes": vis_nodes, "edges": vis_edges, "hub_id": hub_id,
+            "target_node_id": st.entidade_foco or "", "layout_ativo": layout_ativo,
+            "base_font_size": FONT_PADRAO,
+        }
+        return payload, vis_nodes, vis_edges, hub_id
+
+    # -------------------------------------------------------------------
+    # GAVETA LATERAL MAIOR (Entities / Cases)
+    # -------------------------------------------------------------------
+    @ui.refreshable
+    def sidebar_container():
+        if st.sidebar_visivel:
+            with ui.column().props('id=lcfo-entities-drawer').classes(
+                'h-full shrink-0 bg-[#18181A] border-r border-[#2B2B2F] p-3 overflow-y-auto custom-scroll relative'
+            ).style('width:280px;'):
+
+                if (st.sketch_ativo_id or st.dados_descoberta) and st.subtela_caso == "mesa":
+                    identificador_caso = st.sketch_ativo_id or "DESCOBERTA"
+                    sketch_ativo = carregar_sketch(st.sketch_ativo_id) if st.sketch_ativo_id else None
+                    c_obj = next((c for c in DADOS.cluster_info
+                                  if sketch_ativo and c["id"] == sketch_ativo.get("cluster_origem_id")), None)
+                    nos_base = c_obj["nodes"] if c_obj else []
+                    balde = st.nos_enriquecidos.get(identificador_caso, {"nodes": {}, "edges": {}})
+                    selecao_atual = st.selecao_entidades.setdefault(identificador_caso, set())
+                    total_nos = len(set(nos_base) | set(balde["nodes"].keys()))
+
+                    def _tipo_de_no(node_id: str) -> str:
+                        if node_id in balde["nodes"]: return balde["nodes"][node_id].get("tipo", "cpf")
+                        if node_id.startswith("CPF_"): return "cpf"
+                        if node_id.startswith("TEL_"): return "telefone"
+                        if node_id.startswith("PLACA_"): return "placa"
+                        return "cpf"
+
+                    def _rotulo_de_no(node_id: str) -> str:
+                        if node_id in balde["nodes"]: return balde["nodes"][node_id].get("label", node_id)
+                        return node_id.split('_', 1)[-1]
+
+                    def _dict_minimo(node_id: str) -> Dict[str, Any]:
+                        if node_id in balde["nodes"]: return balde["nodes"][node_id]
+                        return {"id": node_id, "tipo": _tipo_de_no(node_id), "valor": _rotulo_de_no(node_id), "label": _rotulo_de_no(node_id)}
+
+                    qtd_enrich = len(balde["nodes"])
+                    if st.entidade_foco or qtd_enrich > 0:
+                        ent_nome = st.entidade_foco or "Ocorrência selecionada"
+                        texto_foco = f"Foco: <b>{ent_nome}</b>"
+                        if qtd_enrich > 0:
+                            texto_foco += f"<br/><span style='color:#71717A;'>{qtd_enrich} entidade(s) via Enrich/Add</span>"
+                        with ui.element('div').classes('foco-lateral-card'):
+                            ui.html(texto_foco)
+                        with ui.row().classes('w-full gap-2 mb-2'):
+                            ui.button('Limpar Foco', on_click=lambda: (
+                                setattr(st, 'entidade_foco', None), workspace.refresh(), sidebar_container.refresh()
+                            )).props('dense').classes('flex-1 bg-[#18181A] hover:bg-[#222225] text-gray-300 text-xs border border-[#2B2B2F] rounded-md')
+                            if qtd_enrich > 0:
+                                def _limpar_enrich():
+                                    st.nos_enriquecidos.pop(identificador_caso, None)
+                                    if st.sketch_ativo_id:
+                                        salvar_nos_extras_sketch(st.sketch_ativo_id, {}, {})
+                                    workspace.refresh()
+                                    sidebar_container.refresh()
+                                ui.button('Limpar Enrich', on_click=_limpar_enrich).props('dense').classes('flex-1 bg-[#18181A] hover:bg-[#222225] text-gray-300 text-xs border border-[#2B2B2F] rounded-md')
+
+                    if selecao_atual:
+                        with ui.element('div').classes('selecao-lateral-card'):
+                            ui.html(f"<b>{len(selecao_atual)} selecionado(s)</b>")
+
+                        def _exportar_selecao():
+                            dados_export = [_dict_minimo(nid) for nid in selecao_atual]
+                            ui.download(
+                                json.dumps(dados_export, ensure_ascii=False, indent=2).encode('utf-8'),
+                                f'selecao_{identificador_caso}.json'
+                            )
+
+                        with ui.row().classes('w-full gap-2 mb-2'):
+                            ui.button('Exportar JSON', on_click=_exportar_selecao).props('dense').classes('flex-1 bg-[#18181A] hover:bg-[#222225] text-gray-300 text-xs border border-[#2B2B2F] rounded-md')
+
+                            def _on_limpar_selecao():
+                                selecao_atual.clear()
+                                for ctx in st.contexto_grafo_ativo.values():
+                                    ctx["grafo"].sincronizar_selecao(selecao_atual)
+                                sidebar_container.refresh()
+
+                            ui.button('Limpar Seleção', on_click=_on_limpar_selecao).props('dense').classes('flex-1 bg-[#18181A] hover:bg-[#222225] text-gray-300 text-xs border border-[#2B2B2F] rounded-md')
+
+                    with ui.row().classes('w-full bg-[#141416] p-1 rounded-lg border border-[#2B2B2F] gap-1 mb-2.5'):
+                        ativo_ent = (st.aba_painel_lateral == "Entities")
+                        ui.button(
+                            f"Entities ({total_nos})",
+                            icon='group',
+                            color=None,
+                            on_click=lambda: (setattr(st, 'aba_painel_lateral', 'Entities'), sidebar_container.refresh())
+                        ).props('flat dense no-caps').classes(
+                            f'flex-1 text-xs py-1 rounded-md font-medium transition-all '
+                            f'{"bg-[#26262B] text-white border border-[#3A3A40] shadow-xs" if ativo_ent else "text-[#71717A] hover:text-white"}'
+                        )
+                        ui.button(
+                            "Add",
+                            icon='person_add',
+                            color=None,
+                            on_click=lambda: (setattr(st, 'aba_painel_lateral', 'Add'), sidebar_container.refresh())
+                        ).props('flat dense no-caps').classes(
+                            f'flex-1 text-xs py-1 rounded-md font-medium transition-all '
+                            f'{"bg-[#26262B] text-white border border-[#3A3A40] shadow-xs" if not ativo_ent else "text-[#71717A] hover:text-white"}'
+                        )
+
+                    if st.aba_painel_lateral == "Entities":
+                        todos_ids = list(dict.fromkeys(list(nos_base) + list(balde["nodes"].keys())))
+                        with ui.row().classes('w-full items-center gap-1.5 mb-2 px-0.5'):
+                            def _on_toggle_selecionar_todos(e):
+                                if e.value:
+                                    selecao_atual.update(todos_ids)
+                                else:
+                                    selecao_atual.clear()
+                                for ctx in st.contexto_grafo_ativo.values():
+                                    ctx["grafo"].sincronizar_selecao(selecao_atual)
+                                sidebar_container.refresh()
+
+                            ui.checkbox(
+                                value=(len(selecao_atual) == len(todos_ids) and len(todos_ids) > 0),
+                                on_change=_on_toggle_selecionar_todos
+                            ).props('dense').classes('shrink-0 scale-90')
+
+                            ui.badge(f"{len(todos_ids)} nodes").classes(
+                                'bg-[#222225] border border-[#2B2B2F] text-[10px] text-gray-300 font-medium px-2 py-0.5 rounded shrink-0'
+                            )
+
+                            ipt_busca_ent = ui.input(placeholder='Search...').props('dense outlined').classes(
+                                'flex-1 bg-[#141416] text-xs h-7 min-h-0 [&_.q-field__control]:h-7 [&_.q-field__control]:min-h-0 [&_.q-field__marginal]:h-7'
+                            )
+
+                            with ui.button(icon='filter_list', color=None).props('flat dense round size=sm').classes(
+                                f"shrink-0 {'text-[#FF7300]' if st.filtro_tipo_entidade != 'TODOS' else 'text-[#71717A] hover:text-white'}"
+                            ).tooltip('Filtrar por tipo'):
+                                with ui.menu().classes(CLASSE_MENU_PADRAO):
+                                    for t_opt in ["TODOS", "CPF", "TELEFONE", "PLACA"]:
+                                        ui.menu_item(LABELS_FILTRO_TIPO[t_opt], on_click=lambda t=t_opt: (
+                                            setattr(st, 'filtro_tipo_entidade', t),
+                                            atualizar_lista_entidades(ipt_busca_ent.value)
+                                        )).classes('text-xs rounded hover:bg-[#222225]')
+
+                        box_ent_list = ui.column().classes('w-full gap-1 h-[calc(100vh-215px)] overflow-y-auto custom-scroll pr-1')
+
+                        def atualizar_lista_entidades(filtro: str = ""):
+                            box_ent_list.clear()
+                            termo = (filtro or "").strip().upper()
+                            with box_ent_list:
+                                for n in todos_ids[:150]:
+                                    tipo = _tipo_de_no(n)
+                                    if st.filtro_tipo_entidade != "TODOS" and tipo.upper() != st.filtro_tipo_entidade:
+                                        continue
+                                    if termo and termo not in n.upper():
+                                        continue
+                                    val = _rotulo_de_no(n)
+
+                                    cfg_cor = CORES_POR_TIPO.get(tipo, {"bg": "#23232A", "border": "#3A3A40"})
+                                    bg_b = cfg_cor["bg"]
+                                    bd_b = cfg_cor["border"]
+
+                                    with ui.row().classes('w-full items-center gap-1.5 p-1.5 rounded-md bg-[#141416]/70 hover:bg-[#222225] border border-transparent hover:border-[#2B2B2F] transition-all'):
+                                        def _on_toggle_selecao(e, nid=n):
+                                            if e.value:
+                                                selecao_atual.add(nid)
+                                            else:
+                                                selecao_atual.discard(nid)
+                                            for ctx in st.contexto_grafo_ativo.values():
+                                                ctx["grafo"].sincronizar_selecao(selecao_atual)
+                                            sidebar_container.refresh()
+
+                                        ui.checkbox(
+                                            value=(n in selecao_atual),
+                                            on_change=_on_toggle_selecao
+                                        ).props('dense').classes('shrink-0 scale-90')
+
+                                        def _focar_no(nid=n):
+                                            st.entidade_foco = nid
+                                            for ctx in st.contexto_grafo_ativo.values():
+                                                # Foco leve: o nó já está renderizado no grafo, então evita
+                                                # o ciclo completo de regravar o payload em disco + fetch
+                                                # no iframe — manda só o ID via postMessage direto.
+                                                ctx["grafo"].focar_no(nid)
+                                            sidebar_container.refresh()
+
+                                        ui.label(val).classes('text-xs font-medium cursor-pointer text-gray-200 hover:text-[#FF7300] truncate flex-1').on('click', _focar_no)
+                                        ui.html(
+                                            f'<span style="background-color:{bg_b}33 !important; color:{bd_b} !important; border:1px solid {bd_b}88 !important; font-size:9px; padding:1px 6px; border-radius:4px; font-weight:600; text-transform:uppercase;">{tipo}</span>'
+                                        ).classes('shrink-0')
+
+                        ipt_busca_ent.on_value_change(lambda e: atualizar_lista_entidades(e.value))
+                        atualizar_lista_entidades()
+
+                    else:
+                        with ui.column().classes('w-full gap-2 pt-1'):
+                            ui.label('Adicionar Entidade').classes('text-[10px] font-semibold text-[#71717A] tracking-wider uppercase mb-1')
+                            if not TEM_ENRICH_ENGINE:
+                                ui.label('Módulo enrich_engine.py não localizado.').classes('text-xs text-[#71717A]')
+                            else:
+                                sel_tipo = ui.select(['Titular (CPF)', 'Telefone', 'Placa'], value='Titular (CPF)').props('dense outlined').classes('w-full text-xs')
+                                ipt_val = ui.input(placeholder='Digite o número/placa...').props('dense outlined').classes('w-full text-xs')
+
+                                def executar_add_entidade():
+                                    v = (ipt_val.value or "").strip()
+                                    if not v: return
+                                    tp = "cpf" if "CPF" in sel_tipo.value else ("telefone" if "Telefone" in sel_tipo.value else "placa")
+                                    res = enriquecer_entidade_local(tp, v)
+                                    balde_local = st.nos_enriquecidos.setdefault(identificador_caso, {"nodes": {}, "edges": {}})
+                                    for n_novo in res.get("novos_nos", []):
+                                        balde_local["nodes"].setdefault(n_novo["id"], n_novo)
+                                    for e_novo in res.get("novas_arestas", []):
+                                        balde_local["edges"].setdefault(e_novo["id"], e_novo)
+                                    if st.sketch_ativo_id:
+                                        salvar_nos_extras_sketch(st.sketch_ativo_id, balde_local["nodes"], balde_local["edges"])
+                                    ui.notify(f"{res.get('total_encontrado', 0)} vínculo(s) processado(s).")
+                                    workspace.refresh()
+
+                                ui.button('Buscar e Adicionar', icon='search', on_click=executar_add_entidade).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white font-semibold text-xs h-8 rounded-md mt-1')
+
+                else:
+                    ui.label('Cases').classes('text-xs font-bold text-[#71717A] uppercase tracking-wider mb-2 px-1')
+                    with ui.column().classes('w-full gap-1 h-[calc(100vh-130px)] overflow-y-auto custom-scroll pr-1'):
+                        if not DADOS.cluster_info:
+                            ui.label('Nenhum dado ingerido ainda.').classes('text-xs text-[#71717A] px-1')
+                        for c in DADOS.cluster_info[:50]:
+                            inf = DADOS.casos_cadastrados.get(c['id'], {})
+                            nome = inf.get('nome') or c['hub_label'][:20]
+                            cor_st = CORES_STATUS.get(inf.get('status', 'Em Investigação'), '#8B95A5')
+                            with ui.row().classes('w-full items-center justify-between p-2 rounded-md bg-[#141416]/50 hover:bg-[#222225] cursor-pointer transition-colors border border-transparent hover:border-[#2B2B2F]').on('click', lambda cid=c['id']: abrir_caso_overview(cid)):
+                                with ui.row().classes('items-center gap-2 truncate'):
+                                    ui.icon('folder', size='15px').classes('text-[#71717A]')
+                                    ui.label(nome).classes('text-xs font-medium text-gray-200 truncate')
+                                ui.element('div').classes('w-1.5 h-1.5 rounded-full shrink-0').style(f'background-color:{cor_st};')
+
+            ui.element('div').props('id=lcfo-sidebar-handle').classes(
+                'h-full w-[5px] shrink-0 cursor-ew-resize bg-[#2B2B2F] hover:bg-[#FF7300]/60 transition-colors'
+            )
+            ui.run_javascript("window.lcfoRegistrarSidebarResize('lcfo-entities-drawer', 'lcfo-sidebar-handle');")
+
+    # -------------------------------------------------------------------
+    # DIALOG: NOVO SKETCH
+    # -------------------------------------------------------------------
+    def _abrir_dialog_novo_sketch(id_dossie: str):
+        with ui.dialog() as dlg_ns, ui.card().classes(f'{CLASSE_MENU_PADRAO} w-[480px] p-5'):
+            ui.label('Adicionar Sketch ao Dossiê').classes('text-sm font-bold text-[#FF7300] uppercase tracking-wider mb-3')
+
+            ui.label('Vincular célula já catalogada:').classes('text-xs text-gray-300 mb-1')
+            ids_ja_no_dossie = {sk['cluster_origem_id'] for sk in listar_sketches_do_caso(id_dossie) if sk['cluster_origem_id']}
+            opcoes_cluster = {
+                c['id']: (DADOS.casos_cadastrados.get(c['id'], {}).get('nome') or c['hub_label'])
+                for c in DADOS.cluster_info if c['id'] not in ids_ja_no_dossie
+            }
+            sel_cluster_ns = ui.select(opcoes_cluster, label='Célula:').props('dense outlined').classes('w-full text-xs mb-2')
+            ipt_nome_ns1 = ui.input(placeholder='Nome deste sketch (ex: Núcleo Financeiro)').props('dense outlined').classes('w-full text-xs mb-3')
+
+            def _vincular():
+                if not sel_cluster_ns.value or not (ipt_nome_ns1.value or "").strip():
+                    ui.notify("Selecione a célula e informe um nome.", type="warning")
+                    return
+                vincular_cluster_como_sketch(id_dossie, sel_cluster_ns.value, ipt_nome_ns1.value.strip())
+                dlg_ns.close()
+                ui.notify("Sketch vinculado.")
+                workspace.refresh()
+
+            ui.button('Vincular Célula', on_click=_vincular).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs h-8 rounded-md mb-4')
+
+            ui.separator().classes('bg-[#2B2B2F] mb-4')
+
+            ui.label('Ou criar um sketch manual vazio:').classes('text-xs text-gray-300 mb-1')
+            ipt_nome_ns2 = ui.input(placeholder='Nome do sketch manual').props('dense outlined').classes('w-full text-xs mb-2')
+
+            def _criar_manual():
+                if not (ipt_nome_ns2.value or "").strip():
+                    ui.notify("Informe um nome.", type="warning")
+                    return
+                criar_sketch(id_dossie, ipt_nome_ns2.value.strip(), tipo_origem="MANUAL")
+                dlg_ns.close()
+                ui.notify("Sketch manual criado.")
+                workspace.refresh()
+
+            ui.button('Criar Sketch Manual', on_click=_criar_manual).classes('w-full bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs h-8 rounded-md')
+        dlg_ns.open()
+
+    def _abrir_confirmacao_remocao_sketch(sk: Dict[str, Any]):
+        with ui.dialog() as dlg_conf, ui.card().classes(f'{CLASSE_MENU_PADRAO} w-[420px] p-4'):
+            ui.label(f'Remover o sketch "{sk["nome_sketch"]}"?').classes('text-sm text-gray-200 mb-1')
+            ui.label('A célula e os dados brutos permanecem no acervo — apenas este recorte deixa de ser listado no dossiê.').classes('text-xs text-[#71717A] mb-3')
+            with ui.row().classes('w-full gap-2 justify-end'):
+                ui.button('Cancelar', on_click=dlg_conf.close).props('flat').classes('text-xs text-gray-400')
+
+                def _confirmar():
+                    ok, msg = remover_sketch(sk['id_sketch'])
+                    dlg_conf.close()
+                    ui.notify(msg, type="positive" if ok else "negative")
+                    workspace.refresh()
+
+                ui.button('Remover', on_click=_confirmar).classes('bg-red-900/60 hover:bg-red-800 text-white text-xs h-8 rounded-md px-3')
+        dlg_conf.open()
+
+    # -------------------------------------------------------------------
+    # WORKSPACE PRINCIPAL
+    # -------------------------------------------------------------------
+    @ui.refreshable
+    def workspace():
+        if (st.sketch_ativo_id or st.dados_descoberta) and st.subtela_caso == "mesa":
+            dossie_persistido = st.sketch_ativo_id is not None
+            identificador_caso = st.sketch_ativo_id or "DESCOBERTA"
+
+            st.contexto_grafo_ativo = {}
+
+            cluster_obj = None
+            sketch_ativo = None
+            if dossie_persistido:
+                sketch_ativo = carregar_sketch(st.sketch_ativo_id)
+                if not sketch_ativo:
+                    ui.label('Sketch não encontrado. Volte ao Dashboard.').classes('text-red-400 p-8')
+                    return
+                cluster_obj = next((c for c in DADOS.cluster_info if c["id"] == sketch_ativo.get("cluster_origem_id")), None)
+                dados_caso = carregar_dados_caso(sketch_ativo["id_caso"])
+                nome_dossie = dados_caso["nome_personalizado"] or f"Dossiê {sketch_ativo['id_caso']}"
+                nome_exib = f"{nome_dossie} · {sketch_ativo['nome_sketch']}"
+
+                cpfs, tels, placas = [], [], []
+                if cluster_obj:
+                    cpfs += [n.replace("CPF_", "") for n in cluster_obj["nodes"] if n.startswith("CPF_")]
+                    tels += [n.replace("TEL_", "") for n in cluster_obj["nodes"] if n.startswith("TEL_")]
+                    placas += [n.replace("PLACA_", "") for n in cluster_obj["nodes"] if n.startswith("PLACA_")]
+
+                balde_atual = st.nos_enriquecidos.get(identificador_caso, {"nodes": {}, "edges": {}})
+                for ninfo in balde_atual["nodes"].values():
+                    tipo_n, val_n = ninfo.get("tipo"), ninfo.get("valor", "")
+                    if tipo_n == "cpf" and val_n: cpfs.append(val_n)
+                    elif tipo_n == "telefone" and val_n: tels.append(val_n)
+                    elif tipo_n == "placa" and val_n: placas.append(val_n)
+
+                df_dados = consultar_detalhes_caso(cpfs, tels, placas) if (cpfs or tels or placas) else pd.DataFrame()
+                resumo_descoberta = None
+            else:
+                if not st.dados_descoberta:
+                    ui.label('Nenhuma descoberta ativa.').classes('text-gray-400 p-8')
+                    return
+                d = st.dados_descoberta
+                df_dados = d["df"]
+                resumo_descoberta = d["resumo"]
+                nome_exib = d["resumo"]["alvo_buscado"]
+                dados_caso = {"status": "Descoberta Ativa", "analista_responsavel": "", "data_atualizacao": "Agora"}
+                cpfs = list(df_dados["cpf"].dropna().unique()) if "cpf" in df_dados.columns else []
+                tels = list(df_dados["telefone"].dropna().unique()) if "telefone" in df_dados.columns else []
+                placas = list(df_dados["placa"].dropna().unique()) if "placa" in df_dados.columns else []
+
+            layout_ativo = st.layout_por_caso.get(identificador_caso, "organico")
+            chave_layout = (sketch_ativo.get("cluster_origem_id") if sketch_ativo else None) or identificador_caso
+
+            payload, vis_nodes, vis_edges, hub_id = montar_payload_grafo(
+                identificador_caso, cluster_obj is not None, cluster_obj, df_dados, resumo_descoberta, layout_ativo,
+                chave_layout=chave_layout
+            )
+
+            if cluster_obj:
+                max_bet = max((n.get("betweenness", 0.0) for n in vis_nodes), default=0.0)
+                subG = DADOS.G.subgraph(cluster_obj["nodes"])
+                score, nivel, cor, fatores, _ = calcular_score_caso(cluster_obj, df_dados, subG, betweenness_precalculado=max_bet)
+            else:
+                score, nivel, cor, fatores, _ = calcular_score_caso(None, df_dados, None)
+
+            periodo = "Sem datas disponíveis"
+            if not df_dados.empty and "data" in df_dados.columns:
+                dts = pd.to_datetime(df_dados["data"], errors="coerce").dropna()
+                if not dts.empty:
+                    periodo = f"{dts.min().strftime('%d/%m/%Y')} → {dts.max().strftime('%d/%m/%Y')}"
+
+            @ui.refreshable
+            def painel_notas():
+                renderizar_painel_analises(sketch_ativo["id_caso"] if sketch_ativo else identificador_caso, dados_caso, painel_notas.refresh)
+
+            def renderizar_painel_interno(nome_painel: str, lado: str = "unico"):
+                if nome_painel == "Grafo de Vínculos":
+                    chave_grafo = f"{identificador_caso}_{lado}"
+                    grafo = GrafoBidirecionalNiceGUI(chave=chave_grafo)
+                    grafo.render(payload)
+
+                    def _montar_payload_atual(layout: str):
+                        p, _, _, _ = montar_payload_grafo(
+                            identificador_caso, cluster_obj is not None, cluster_obj, df_dados, resumo_descoberta, layout,
+                            chave_layout=chave_layout
+                        )
+                        return p
+
+                    st.contexto_grafo_ativo[lado] = {
+                        "identificador_caso": identificador_caso,
+                        "chave_layout": chave_layout,
+                        "chave_grafo": chave_grafo,
+                        "eh_oficial": dossie_persistido,
+                        "montar_payload": _montar_payload_atual,
+                        "sidebar_refresh": sidebar_container.refresh,
+                        "grafo": grafo,
+                    }
+
+                elif nome_painel == "Tabela de Ocorrências":
+                    with ui.column().classes('w-full h-full pt-14 px-8 overflow-y-auto custom-scroll'):
+                        cols = [c for c in ["data", "id_assistencia", "titular", "cpf", "telefone", "placa", "servico", "cidade", "uf", "empresa_cliente"] if c in df_dados.columns]
+                        if cols and not df_dados.empty:
+                            with ui.element('div').classes('w-full').style('max-height: calc(100vh - 220px); overflow: auto;'):
+                                ui.table.from_pandas(_sanitizar_df_para_tabela(df_dados[cols]), pagination=15).classes(
+                                    'w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl'
+                                )
+                        else:
+                            ui.label('Sem ocorrências para exibir.').classes('text-[#71717A]')
+
+                elif nome_painel == "Radar Territorial (Mapa)":
+                    with ui.column().classes('w-full h-full pt-14 px-8 pb-8 overflow-y-auto custom-scroll gap-4'):
+                        df_map = df_dados.dropna(subset=["latitude", "longitude"]) if "latitude" in df_dados.columns else pd.DataFrame()
+                        if not df_map.empty:
+                            campos_possiveis = ["titular", "cpf", "telefone", "placa", "servico", "cidade", "uf", "data", "empresa_cliente"]
+                            campos_tooltip = "<br/>".join(
+                                f"<b>{c.replace('_', ' ').title()}:</b> {{{c}}}" for c in campos_possiveis if c in df_map.columns
+                            )
+                            tooltip_caso_map = {
+                                "html": f"<div style='font-family:sans-serif; padding:8px; line-height:1.5;'>{campos_tooltip}</div>",
+                                "style": {"backgroundColor": "#18181A", "color": "#EDEDED", "border": "1px solid #2B2B2F", "borderRadius": "8px", "fontSize": "11px"}
+                            }
+                            deck = pdk.Deck(
+                                layers=[pdk.Layer("ScatterplotLayer", data=df_map, get_position="[longitude, latitude]", get_color="[255, 115, 0, 200]", get_radius=3500, pickable=True)],
+                                initial_view_state=pdk.ViewState(latitude=float(df_map["latitude"].mean()), longitude=float(df_map["longitude"].mean()), zoom=6),
+                                tooltip=tooltip_caso_map,
+                                map_style="dark",
+                            )
+                            ui.html(
+                                f'<iframe srcdoc="{html.escape(deck.to_html(as_string=True))}" style="width:100%;height:600px;border:none;border-radius:12px;"></iframe>',
+                                sanitize=False
+                            ).classes('w-full')
+
+                            if "cidade" in df_dados.columns and "uf" in df_dados.columns:
+                                df_resumo_mapa = (
+                                    df_dados.groupby(["cidade", "uf"]).size()
+                                    .reset_index(name="Total")
+                                    .sort_values(by="Total", ascending=False)
+                                )
+                                ui.table.from_pandas(_sanitizar_df_para_tabela(df_resumo_mapa), pagination=15).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl')
+                        else:
+                            ui.label('Sem coordenadas geográficas para plotagem.').classes('text-[#71717A]')
+
+                elif nome_painel == "Evolução Temporal":
+                    with ui.column().classes('w-full h-full pt-14 px-8'):
+                        df_t = df_dados.copy()
+                        if "data" in df_t.columns and not df_t.empty:
+                            df_t["mes"] = pd.to_datetime(df_t["data"], errors="coerce").dt.strftime("%Y-%m")
+                            df_t = df_t.dropna(subset=["mes"]).groupby("mes").size().reset_index(name="total")
+                            ui.echart({
+                                "backgroundColor": "transparent",
+                                "tooltip": {
+                                    "trigger": "axis",
+                                    "backgroundColor": "rgba(24, 24, 26, 0.95)",
+                                    "borderColor": "#2B2B2F",
+                                    "borderWidth": 1,
+                                    "padding": [8, 12],
+                                    "textStyle": {"color": "#EDEDED", "fontSize": 11},
+                                    "axisPointer": {
+                                        "type": "line",
+                                        "lineStyle": {"color": "#FF7300", "opacity": 0.25, "width": 14}
+                                    },
+                                    "extraCssText": "backdrop-filter: blur(8px); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);"
+                                },
+                                "xAxis": {
+                                    "type": "category", "data": df_t["mes"].tolist(),
+                                    "axisLine": {"lineStyle": {"color": "#2B2B2F"}},
+                                    "axisLabel": {"color": "#71717A", "fontSize": 11}
+                                },
+                                "yAxis": {
+                                    "type": "value",
+                                    "splitLine": {"lineStyle": {"color": "#1F1F23", "opacity": 0.6}},
+                                    "axisLabel": {"color": "#71717A", "fontSize": 11}
+                                },
+                                "series": [{"data": df_t["total"].tolist(), "type": "bar", "itemStyle": {"color": "#FF7300", "borderRadius": [4, 4, 0, 0]}}],
+                            }).classes('w-full h-[520px]')
+                        else:
+                            ui.label('Sem datas disponíveis.').classes('text-[#71717A]')
+
+                elif nome_painel == "Expansão com Criações":
+                    with ui.column().classes('w-full h-full pt-14 px-8 overflow-y-auto custom-scroll'):
+                        if not dossie_persistido:
+                            ui.label('Expansão habilitada em sketches oficiais autuados. Use o painel superior para promover esta descoberta.').classes('text-xs text-[#71717A]')
+                        elif not cluster_obj:
+                            ui.label('Este sketch ainda não tem uma célula oficial vinculada — não é possível cruzar com Criações Diárias.').classes('text-xs text-[#71717A]')
+                        else:
+                            res_int, df_m, df_susp = cruzar_com_criacoes_diarias(cpfs, tels, placas)
+                            if res_int is None:
+                                ui.label('Criações Diárias ainda não ingeridas.').classes('text-[#71717A]')
+                            elif df_susp.empty:
+                                ui.label('Nenhum suspeito inédito detectado nas Criações Diárias.').classes('text-[#71717A]')
+                            else:
+                                ui.label('Novos Suspeitos Detectados').classes('text-sm font-bold text-[#FF7300] mb-2')
+                                ui.table.from_pandas(_sanitizar_df_para_tabela(df_susp)).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs mb-3 rounded-xl')
+                                nome_dossie_atual = (dados_caso.get("nome_personalizado") if isinstance(dados_caso, dict) else None) or nome_exib
+                                ui.button('Incorporar Suspeitos ao Sketch', on_click=lambda: (
+                                    anexar_descoberta_a_caso_existente(df_m, cluster_obj["id"], nome_quadrilha_override=nome_dossie_atual),
+                                    ui.notify('Incorporado!'),
+                                    DADOS.recarregar(),
+                                    workspace.refresh(),
+                                )).classes('bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md')
+
+                elif nome_painel == "Ferramentas":
+                    with ui.column().classes('w-full h-full pt-14 px-8 pb-8 overflow-y-auto custom-scroll max-w-4xl gap-2'):
+                        if not dossie_persistido:
+                            ui.label('Disponível apenas para sketches oficiais.').classes('text-[#71717A]')
+                        else:
+                            ui.label('Isolamento de Terceiros da Cadeia de Custódia (escopo: este sketch)').classes('text-sm font-bold text-gray-300')
+                            with ui.row().classes('w-full gap-2 items-center mb-2'):
+                                sel_no = ui.select(cluster_obj['nodes'] if cluster_obj else [], label='Selecionar Nó:').props('dense outlined').classes('w-64 text-xs')
+                                ipt_mot = ui.input(placeholder='Motivo do isolamento...').props('dense outlined').classes('w-80 text-xs')
+                                ui.button('Isolar Nó', on_click=lambda: (
+                                    ocultar_no_do_caso(identificador_caso, sel_no.value, ipt_mot.value),
+                                    ui.notify('Nó isolado!'),
+                                    workspace.refresh(),
+                                )).classes('bg-red-900/60 hover:bg-red-800 text-white text-xs h-8 rounded-md px-3 border border-red-700/50')
+
+                            ocultos = listar_nos_ocultos_do_caso(identificador_caso)
+                            if ocultos:
+                                ui.label('Nós ocultados neste sketch:').classes('text-xs font-semibold text-[#71717A] mt-2')
+                                for oc in ocultos:
+                                    with ui.row().classes('items-center justify-between w-full text-xs text-gray-400 py-1'):
+                                        ui.label(f"{oc['node_id']} — {oc['motivo'] or 'sem justificativa'}")
+                                        ui.button('Reativar', on_click=lambda nid=oc['node_id']: (
+                                            restaurar_no_do_caso(identificador_caso, nid), workspace.refresh()
+                                        )).props('dense flat').classes('text-[#FF7300]')
+
+                            if TEM_EXIF_ENGINE:
+                                ui.separator().classes('my-4 bg-[#2B2B2F]')
+                                ui.label('Perícia Forense de Imagens (EXIF)').classes('text-sm font-bold text-gray-300 mb-1')
+                                ui.label('Confronte o GPS da foto contra a praça declarada no sinistro.').classes('text-xs text-[#71717A] mb-3')
+
+                                if df_dados.empty or "id_assistencia" not in df_dados.columns:
+                                    ui.label('Sem identificadores de assistência disponíveis.').classes('text-xs text-[#71717A]')
+                                else:
+                                    opcoes_assist_exif: Dict[str, Tuple[str, str]] = {}
+                                    for _, r_assist in df_dados.iterrows():
+                                        rot = f"{r_assist.get('id_assistencia', '?')} — {r_assist.get('cidade', '?')}/{r_assist.get('uf', '?')} ({r_assist.get('data', '?')})"
+                                        opcoes_assist_exif[rot] = (str(r_assist.get("cidade", "")), str(r_assist.get("uf", "")))
+
+                                    sel_assist_exif = ui.select(
+                                        list(opcoes_assist_exif.keys()), label='Assistência:'
+                                    ).props('dense outlined').classes('w-full text-xs mb-2')
+
+                                    resultado_exif_box = ui.column().classes('w-full gap-2 mt-2')
+                                    estado_exif: Dict[str, Any] = {"bytes": None, "nome": None}
+
+                                    def _ao_subir_foto_exif(e):
+                                        estado_exif["bytes"] = e.content.read()
+                                        estado_exif["nome"] = e.name
+                                        ui.notify(f"Foto '{e.name}' carregada. Clique em Analisar.")
+
+                                    ui.upload(
+                                        on_upload=_ao_subir_foto_exif,
+                                        label='Foto (JPEG/PNG):',
+                                        auto_upload=True,
+                                    ).props('dense accept=".jpg,.jpeg,.png"').classes('w-full text-xs mb-2')
+
+                                    def _executar_analise_exif():
+                                        resultado_exif_box.clear()
+                                        if not estado_exif["bytes"]:
+                                            ui.notify("Envie uma foto antes de analisar.", type="warning")
+                                            return
+                                        if not sel_assist_exif.value:
+                                            ui.notify("Selecione uma assistência.", type="warning")
+                                            return
+                                        cidade_sel, uf_sel = opcoes_assist_exif[sel_assist_exif.value]
+                                        metadados = extrair_metadados_foto(estado_exif["bytes"])
+                                        with resultado_exif_box:
+                                            if not metadados["possui_exif"]:
+                                                ui.label('Metadados EXIF ausentes na imagem.').classes('text-xs text-yellow-400')
+                                            elif metadados.get("erro"):
+                                                ui.label(f"Erro ao processar: {metadados['erro']}").classes('text-xs text-red-400')
+                                            else:
+                                                with ui.row().classes('w-full gap-8'):
+                                                    with ui.column().classes('gap-1'):
+                                                        ui.label('Metadados Extraídos:').classes('text-xs font-bold text-gray-300')
+                                                        ui.label(f"Dispositivo: {metadados.get('fabricante') or 'N/D'} {metadados.get('modelo') or ''}").classes('text-xs text-gray-400')
+                                                        ui.label(f"Data: {metadados.get('data_captura') or 'N/D'}")
+                                                        ui.label(f"GPS: [{metadados.get('latitude')}, {metadados.get('longitude')}]").classes('text-xs text-gray-400')
+                                                    with ui.column().classes('gap-1'):
+                                                        ui.label(f"Confronto Territorial ({cidade_sel}/{uf_sel}):").classes('text-xs font-bold text-gray-300')
+                                                        confronto = validar_coerencia_geografica_foto(
+                                                            metadados_foto=metadados, cidade_declarada=cidade_sel,
+                                                            uf_declarada=uf_sel, tolerancia_km=TOLERANCIA_KM_EXIF
+                                                        )
+                                                        cor_confronto = 'text-red-400' if confronto["divergencia_critica"] else 'text-green-400'
+                                                        ui.label(confronto["parecer_exif"]).classes(f'text-xs {cor_confronto}')
+
+                                    ui.button('Analisar Foto', icon='search', on_click=_executar_analise_exif).classes('bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md')
+
+            with ui.row().classes('w-full h-full flex-nowrap gap-0'):
+                with ui.element('div').classes('relative flex-1 h-full overflow-hidden bg-[#121214]'):
+
+                    with ui.column().classes('absolute top-3 left-1/2 -translate-x-1/2 z-40 items-stretch gap-2 w-[92%] max-w-[1120px] pointer-events-none'):
+                        with ui.row().classes('w-full flex-nowrap items-stretch gap-2 pointer-events-auto'):
+                            with ui.row().classes('lcfo-panel hud-compact-row flex-1 min-w-0'):
+                                ui.html(f"""
+                                    <span style="font-size:13px; font-weight:700; color:#EDEDED;">{nome_exib.upper()}</span>
+                                    <span class="badge-pill" style="background:{cor}22; color:{cor}; border:1px solid {cor}55;">FRAUD SCORE: {score}/100 [{nivel}]</span>
+                                    <span style="font-size:11px; color:#71717A;">Status: <b style="color:#6FA98A;">{dados_caso['status']}</b></span>
+                                    <span style="font-size:11px; color:#71717A;">Âncora: <b style="color:#C9A66B;">{hub_id or 'N/D'}</b></span>
+                                    <span style="font-size:11px; color:#71717A;">Acionamentos: <b style="color:#EDEDED;">{len(df_dados)} reg.</b></span>
+                                    <span style="font-size:11px; color:#71717A;">Período: <b style="color:#CCCCCC;">{periodo}</b></span>
+                                """)
+                            with ui.button(icon='analytics', color=None).props('flat dense round').classes(
+                                'lcfo-panel lcfo-dossie-btn shrink-0 self-stretch !rounded-[10px]'
+                            ).tooltip('Dossiê Topológico'):
+                                with ui.menu().classes(f'{CLASSE_MENU_PADRAO} w-[760px] max-w-[95vw]').style('display: flex; gap: 12px; flex-direction: row;'):
+                                    with ui.column().classes('flex-1 bg-[#18181A] border border-[#2B2B2F] p-3.5 rounded-lg shadow-sm'):
+                                        ui.label('INDICADORES IDENTIFICADOS').style('font-size: 11px; font-weight: 700; color: #FF7300; letter-spacing: 0.05em; margin-bottom: 6px;')
+                                        ui.html('<br/>'.join([f"• {f}" for f in fatores[:5]]) if fatores else "Comportamento relacional estável dentro da normalidade.", tag='div').style('font-size: 12px; line-height: 1.6; color: #CCCCCC;')
+                                    with ui.column().classes('flex-1 bg-[#18181A] border border-[#2B2B2F] p-3.5 rounded-lg shadow-sm'):
+                                        ui.label('MÉTRICAS DA CÉLULA').style('font-size: 11px; font-weight: 700; color: #FF7300; letter-spacing: 0.05em; margin-bottom: 6px;')
+                                        ui.html(f"• Nós: {len(vis_nodes)}<br/>• Conexões: {len(vis_edges)}<br/>• Acionamentos: {len(df_dados)}", tag='div').style('font-size: 12px; line-height: 1.6; color: #CCCCCC;')
+                                    with ui.column().classes('flex-1 bg-[#18181A] border border-[#2B2B2F] p-3.5 rounded-lg shadow-sm'):
+                                        ui.label('STATUS DA INVESTIGAÇÃO').style('font-size: 11px; font-weight: 700; color: #FF7300; letter-spacing: 0.05em; margin-bottom: 6px;')
+                                        ui.html(f"• Analista: {dados_caso.get('analista_responsavel') or 'Não atribuído'}<br/>• Atualizado: {dados_caso.get('data_atualizacao') or 'Hoje'}", tag='div').style('font-size: 12px; line-height: 1.6; color: #CCCCCC;')
+
+                        if not dossie_persistido:
+                            opcoes_sketches_todos: Dict[str, str] = {}
+                            for cid_dossie, info_dossie in DADOS.casos_cadastrados.items():
+                                for sk in listar_sketches_do_caso(cid_dossie):
+                                    if sk["cluster_origem_id"]:
+                                        nome_dossie_opt = info_dossie.get("nome") or cid_dossie
+                                        opcoes_sketches_todos[sk["id_sketch"]] = f"{nome_dossie_opt} · {sk['nome_sketch']}"
+                            opcoes_dossies_todos = {cid: (info.get('nome') or cid) for cid, info in DADOS.casos_cadastrados.items()}
+
+                            with ui.expansion('⚡ Promover a Novo Caso, Novo Sketch ou Fundir', icon='auto_awesome').classes('lcfo-panel pointer-events-auto w-full text-xs'):
+                                with ui.row().classes('w-full gap-3 mt-2 flex-wrap'):
+                                    with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] flex-1 min-w-[240px] p-3'):
+                                        ui.label('Criar Nova Operação').classes('text-xs font-bold text-[#FF7300]')
+                                        ipt_p_nome = ui.input(placeholder='Nome da Investigação...').props('dense outlined').classes('w-full text-xs mt-1')
+                                        sel_p_st = ui.select(["Em Investigação", "Confirmado Fraude", "Monitoramento Contínuo"], value="Em Investigação").props('dense outlined').classes('w-full text-xs mt-1')
+                                        ipt_p_an = ui.input(placeholder='Analista Responsável').props('dense outlined').classes('w-full text-xs mt-1')
+
+                                        def _exec_promover():
+                                            nm = (ipt_p_nome.value or "").strip()
+                                            if not nm:
+                                                ui.notify("Informe um nome para o caso.", type="warning")
+                                                return
+                                            nos_p = promover_descoberta_para_caso(df_dados)
+                                            DADOS.recarregar()
+                                            cl_p = next((c for c in DADOS.cluster_info if any(n in c["nodes"] for n in nos_p)), None)
+                                            if cl_p:
+                                                vincular_caso_e_entidades(cl_p["id"], nos_p, nm, sel_p_st.value, ipt_p_an.value, "")
+                                                DADOS.recarregar()
+                                                criar_sketch(cl_p["id"], "Sketch Principal", tipo_origem="DESCOBERTA_DIARIA", cluster_origem_id=cl_p["id"])
+                                                ui.notify("Rede autuada com sucesso!")
+                                                abrir_caso_overview(cl_p["id"])
+                                            else:
+                                                ui.notify("Erro na consolidação da malha.", type="negative")
+
+                                        ui.button('Autuar Nova Operação', on_click=_exec_promover).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs h-7 rounded-md mt-2')
+
+                                    with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] flex-1 min-w-[240px] p-3'):
+                                        ui.label('Novo Sketch em Dossiê Existente').classes('text-xs font-bold text-[#FF7300]')
+                                        sel_ns_dossie = ui.select(opcoes_dossies_todos, label='Dossiê:').props('dense outlined').classes('w-full text-xs mt-1')
+                                        ipt_ns_nome = ui.input(placeholder='Nome deste sketch...').props('dense outlined').classes('w-full text-xs mt-1')
+
+                                        def _exec_novo_sketch():
+                                            if not sel_ns_dossie.value or not (ipt_ns_nome.value or "").strip():
+                                                ui.notify("Selecione o dossiê e informe um nome.", type="warning")
+                                                return
+                                            nos_p = promover_descoberta_para_caso(df_dados)
+                                            DADOS.recarregar()
+                                            cl_p = next((c for c in DADOS.cluster_info if any(n in c["nodes"] for n in nos_p)), None)
+                                            id_sk = criar_sketch(
+                                                sel_ns_dossie.value, ipt_ns_nome.value.strip(),
+                                                tipo_origem="DESCOBERTA_DIARIA",
+                                                cluster_origem_id=(cl_p["id"] if cl_p else "")
+                                            )
+                                            ui.notify("Novo sketch criado no dossiê selecionado!")
+                                            abrir_mesa_sketch(id_sk)
+
+                                        ui.button('Criar Sketch no Dossiê', on_click=_exec_novo_sketch).classes('w-full bg-[#222225] hover:bg-[#2B2B2F] text-white text-xs h-7 rounded-md mt-2')
+
+                                    with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] flex-1 min-w-[240px] p-3'):
+                                        ui.label('Fundir a Sketch Existente').classes('text-xs font-bold text-[#FF7300]')
+                                        sel_ns_alvo = ui.select(opcoes_sketches_todos, label='Sketch de destino:').props('dense outlined').classes('w-full text-xs mt-1')
+                                        ipt_ns_motivo = ui.input(placeholder='Motivo do vínculo...').props('dense outlined').classes('w-full text-xs mt-1')
+
+                                        def _exec_fundir():
+                                            if not sel_ns_alvo.value:
+                                                ui.notify("Selecione o sketch de destino.", type="warning")
+                                                return
+                                            sketch_alvo = carregar_sketch(sel_ns_alvo.value)
+                                            if not sketch_alvo or not sketch_alvo["cluster_origem_id"]:
+                                                ui.notify("Sketch selecionado ainda não tem célula oficial vinculada.", type="negative")
+                                                return
+                                            nome_dossie_ativo = DADOS.casos_cadastrados.get(sketch_alvo["id_caso"], {}).get("nome") or f"Dossiê {sketch_alvo['id_caso']}"
+                                            anexar_descoberta_a_caso_existente(
+                                                df_dados, sketch_alvo["cluster_origem_id"], "", ipt_ns_motivo.value,
+                                                nome_quadrilha_override=nome_dossie_ativo
+                                            )
+                                            DADOS.recarregar()
+                                            ui.notify("Ocorrências fundidas ao sketch selecionado.")
+                                            abrir_mesa_sketch(sketch_alvo["id_sketch"])
+
+                                        ui.button('Fundir Ocorrências', on_click=_exec_fundir).classes('w-full bg-[#222225] hover:bg-[#2B2B2F] text-white text-xs h-7 rounded-md mt-2')
+
+                        if not st.cockpit_ativo:
+                            with ui.row().classes('lcfo-panel gap-1 px-2 py-1 self-center pointer-events-auto'):
+                                for opc in OPCOES_TOOLBAR:
+                                    icn = ICONE_TOOLBAR.get(opc, "circle")
+                                    ativo_opc = (st.painel_unico == opc)
+                                    ui.button(icon=icn, color=None, on_click=lambda o=opc: (setattr(st, 'painel_unico', o), workspace.refresh())).props('flat dense round').classes(
+                                        f"lcfo-dock-btn {'lcfo-dock-btn-active' if ativo_opc else ''}"
+                                    ).tooltip(opc)
+
+                    if not st.cockpit_ativo:
+                        with ui.element('div').classes('w-full h-full mt-16'):
+                            renderizar_painel_interno(st.painel_unico, lado="unico")
+                    else:
+                        with ui.splitter(value=st.cockpit_proporcao, on_change=lambda e: setattr(st, 'cockpit_proporcao', e.value)).classes('w-full h-full mt-[68px]') as splitter:
+                            with splitter.before:
+                                with ui.row().classes('viewport-header'):
+                                    with ui.button(f"{st.painel_esquerdo[:15]} ⌵", color=None).props('flat dense no-caps').classes('text-xs font-semibold text-[#FF7300]'):
+                                        with ui.menu().classes(CLASSE_MENU_PADRAO):
+                                            for opc in OPCOES_TOOLBAR:
+                                                ui.menu_item(opc, on_click=lambda o=opc: (setattr(st, 'painel_esquerdo', o), workspace.refresh())).classes('text-xs rounded-md hover:bg-[#222225]')
+                                    ui.button(icon='close', color=None, on_click=lambda: (setattr(st, 'cockpit_ativo', False), workspace.refresh())).props('flat dense round size=xs').classes('text-[#71717A] hover:text-white').tooltip('Fechar painel')
+                                with ui.element('div').classes('w-full h-[calc(100%-32px)]'):
+                                    renderizar_painel_interno(st.painel_esquerdo, lado="esq")
+
+                            with splitter.after:
+                                with ui.row().classes('viewport-header'):
+                                    with ui.button(f"{st.painel_direito[:15]} ⌵", color=None).props('flat dense no-caps').classes('text-xs font-semibold text-[#FF7300]'):
+                                        with ui.menu().classes(CLASSE_MENU_PADRAO):
+                                            for opc in OPCOES_TOOLBAR:
+                                                ui.menu_item(opc, on_click=lambda o=opc: (setattr(st, 'painel_direito', o), workspace.refresh())).classes('text-xs rounded-md hover:bg-[#222225]')
+                                    ui.button(icon='close', color=None, on_click=lambda: (setattr(st, 'cockpit_ativo', False), workspace.refresh())).props('flat dense round size=xs').classes('text-[#71717A] hover:text-white').tooltip('Fechar painel')
+                                with ui.element('div').classes('w-full h-[calc(100%-32px)]'):
+                                    renderizar_painel_interno(st.painel_direito, lado="dir")
+
+                if st.mostrar_notas and dossie_persistido:
+                    ui.element('div').props('id=lcfo-notes-handle').classes(
+                        'h-full w-[5px] shrink-0 cursor-ew-resize bg-[#2B2B2F] hover:bg-[#FF7300]/60 transition-colors'
+                    )
+                    with ui.column().props('id=lcfo-notes-panel').classes(
+                        'h-full shrink-0 bg-[#18181A] border-l border-[#2B2B2F] overflow-y-auto custom-scroll p-4 gap-2'
+                    ).style('width:380px;'):
+                        painel_notas()
+                    ui.run_javascript("window.lcfoRegistrarNotasResize('lcfo-notes-panel', 'lcfo-notes-handle');")
+
+        # ================================================================
+        # TELA: OVERVIEW DO DOSSIÊ — GRID DE SKETCHES
+        # ================================================================
+        elif st.caso_ativo_id and st.subtela_caso == "overview":
+            id_dossie = st.caso_ativo_id
+            dados_caso = carregar_dados_caso(id_dossie)
+            nome_exib = dados_caso["nome_personalizado"] or f"Dossiê {id_dossie}"
+
+            sketches = listar_sketches_do_caso(id_dossie)
+            if not sketches:
+                c_match = next((c for c in DADOS.cluster_info if c["id"] == id_dossie), None)
+                if c_match:
+                    criar_sketch(id_dossie, "Cluster Relacional Principal", tipo_origem="CLUSTER_OFICIAL", cluster_origem_id=id_dossie)
+                    sketches = listar_sketches_do_caso(id_dossie)
+
+            mapa_scores_ov = obter_scores_triagem(DADOS.cluster_info)
+            score_ov = mapa_scores_ov.get(id_dossie, {"score": 0, "nivel": "BAIXO"})
+            cor_risco_ov = CORES_RISCO.get(score_ov['nivel'], '#8B95A5')
+            cor_status_ov = CORES_STATUS.get(dados_caso['status'], '#8B95A5')
+
+            with ui.column().classes('w-full h-full overflow-y-auto custom-scroll'):
+                with ui.column().classes('w-full max-w-6xl mx-auto p-8 gap-4'):
+                    with ui.row().classes('w-full items-start justify-between border-b border-[#2B2B2F] pb-4'):
+                        with ui.column().classes('gap-1'):
+                            ui.label(f"Cases / {nome_exib}").classes('text-xs text-[#71717A] font-medium')
+                            ui.label(nome_exib).classes('text-2xl font-bold text-white tracking-tight')
+
+                            with ui.row().classes('items-center gap-2 mt-1 text-xs no-wrap'):
+                                ui.label(f"Status: {dados_caso['status']}").classes('text-xs').style(f"color:{cor_status_ov}; font-weight:600;")
+                                ui.label('•').classes('text-[#71717A]')
+                                ui.label(f"Risco {score_ov['nivel']} · {score_ov['score']}/100").style(f"color:{cor_risco_ov}; font-weight:700;")
+                                ui.label('•').classes('text-[#71717A]')
+                                ui.label(f"Updated {dados_caso.get('data_atualizacao') or 'Hoje'}").classes('text-[#71717A]')
+
+                            with ui.row().classes('items-center gap-1 text-xs mt-0.5'):
+                                ui.label('Investigador:').classes('text-[#71717A]')
+                                ui.label(dados_caso.get('analista_responsavel') or 'Sistema').classes('text-gray-200 font-medium')
+
+                        with ui.button(icon='settings', color=None).props('flat dense round').classes(
+                            'w-8 h-8 rounded-lg text-[#71717A] hover:text-white hover:bg-[#18181A]'
+                        ).tooltip('Editar metadados'):
+                            with ui.menu().classes(f'{CLASSE_MENU_PADRAO} w-80'):
+                                ui.label('Nome da Quadrilha:').classes('text-xs text-gray-300 font-medium mb-1')
+                                ipt_edit_nome = ui.input(value=dados_caso['nome_personalizado']).props('dense outlined').classes('w-full text-xs mb-3')
+
+                                ui.label('Status:').classes('text-xs text-gray-300 font-medium mb-1')
+                                lista_status_edit = ["Em Investigação", "Confirmado Fraude", "Monitoramento Contínuo", "Sem Irregularidade Identificada", "Falso Positivo", "Arquivado"]
+                                sel_edit_status = ui.select(
+                                    lista_status_edit,
+                                    value=dados_caso['status'] if dados_caso['status'] in lista_status_edit else lista_status_edit[0]
+                                ).props('dense outlined').classes('w-full text-xs mb-3')
+
+                                ui.label('Analista:').classes('text-xs text-gray-300 font-medium mb-1')
+                                ipt_edit_analista = ui.input(value=dados_caso['analista_responsavel']).props('dense outlined').classes('w-full text-xs mb-4')
+
+                                def _salvar_edicao_metadados():
+                                    novo_nome = (ipt_edit_nome.value or "").strip()
+                                    novo_status = sel_edit_status.value
+                                    novo_analista = (ipt_edit_analista.value or "").strip()
+
+                                    atualizar_metadados_caso(id_dossie, novo_nome, novo_status, novo_analista)
+                                    DADOS.recarregar()
+                                    ui.notify("Metadados atualizados com sucesso.")
+                                    navbar_breadcrumbs.refresh()
+                                    sidebar_container.refresh()
+                                    workspace.refresh()
+
+                                ui.button('Salvar Alterações', on_click=_salvar_edicao_metadados).classes(
+                                    'w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md'
+                                )
+
+                    with ui.row().classes('w-full items-center justify-between mt-2'):
+                        ui.label(f'Sketches ({len(sketches)})').classes('text-sm font-bold text-gray-200 tracking-tight')
+                        ui.button('Novo Sketch', icon='add', on_click=lambda: _abrir_dialog_novo_sketch(id_dossie)).classes(
+                            'bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold px-4 h-8 rounded-md'
+                        )
+
+                    if not sketches:
+                        ui.label('Nenhum sketch neste dossiê ainda.').classes('text-[#71717A] mt-2')
+                    else:
+                        with ui.grid().classes('grid-cols-3 gap-4 w-full mt-2'):
+                            for sk in sketches:
+                                cluster_sk = next((c for c in DADOS.cluster_info if c["id"] == sk["cluster_origem_id"]), None) if sk["cluster_origem_id"] else None
+                                nos_extra_sk, _ = carregar_nos_extras_sketch(sk["id_sketch"])
+                                total_nos_sk = (cluster_sk["tamanho"] if cluster_sk else 0) + len(nos_extra_sk)
+                                qtd_tel_sk = (cluster_sk["qtd_tels"] if cluster_sk else 0)
+                                qtd_cpf_sk = (cluster_sk["qtd_cpfs"] if cluster_sk else 0)
+                                qtd_placa_sk = (cluster_sk.get("qtd_placas", 0) if cluster_sk else 0)
+
+                                with ui.element('div').classes('lcfo-sketch-card flex flex-col'):
+                                    with ui.row().classes('w-full items-center justify-between px-3 pt-3'):
+                                        ui.label(sk['nome_sketch']).classes('text-xs font-bold text-white truncate flex-1')
+                                        ui.button(icon='delete_outline', color=None,
+                                                  on_click=lambda sk=sk: _abrir_confirmacao_remocao_sketch(sk)).props(
+                                            'flat dense round size=xs'
+                                        ).classes('text-[#71717A] hover:text-red-400 shrink-0').tooltip('Remover sketch')
+
+                                    with ui.element('div').classes('cursor-pointer').on(
+                                        'click', lambda sid=sk['id_sketch']: abrir_mesa_sketch(sid)
+                                    ):
+                                        with ui.element('div').classes('w-full h-20 bg-[#141416] mx-0 mt-1 flex items-center justify-center px-2'):
+                                            ui.html(gerar_svg_miniatura_cluster(cluster_sk)).classes('w-full h-full')
+
+                                        with ui.column().classes('gap-0.5 w-full border-t border-[#2B2B2F] p-3'):
+                                            if sk.get('descricao'):
+                                                ui.label(sk['descricao']).classes('text-[11px] text-[#71717A] truncate')
+                                            if cluster_sk:
+                                                ui.label(f"{total_nos_sk} nós · {qtd_tel_sk} tels · {qtd_cpf_sk} tit · {qtd_placa_sk} placas").classes('text-[11px] text-[#71717A]')
+                                            else:
+                                                ui.label(f"Sem célula vinculada · {len(nos_extra_sk)} entidade(s) manual(is)").classes('text-[11px] text-[#71717A]')
+
+                    with ui.card().classes('bg-transparent border-none p-0 w-full mt-4'):
+                        renderizar_painel_analises(id_dossie, dados_caso, workspace.refresh)
+
+        # ================================================================
+        # TELA: DASHBOARD (FILA DE INVESTIGAÇÕES)
+        # ================================================================
+        elif st.tela_ativa == "Casos":
+            with ui.column().classes('w-full h-full overflow-y-auto custom-scroll'):
+                with ui.column().classes('w-full max-w-7xl mx-auto p-8 gap-4'):
+                    with ui.row().classes('w-full items-center justify-between'):
+                        with ui.column().classes('gap-1'):
+                            ui.label('Investigations').classes('text-xl font-bold text-white tracking-tight')
+                            ui.label('Manage and track your insurance fraud investigations').classes('text-xs text-[#71717A]')
+                        with ui.row().classes('gap-3'):
+                            qtd_quadrilhas = len([c for c in DADOS.casos_cadastrados.values() if c.get('nome')])
+                            for titulo, valor, cor in [
+                                ('TOTAL CÉLULAS', f"{len(DADOS.cluster_info):,}", 'text-white'),
+                                ('ENTIDADES', f"{DADOS.G.number_of_nodes():,}" if DADOS.G else "0", 'text-gray-300'),
+                                ('QUADRILHAS', f"{qtd_quadrilhas:,}", 'text-green-400'),
+                                ('NO RADAR', f"{len(DADOS.radar_alertas):,}", 'text-red-400'),
+                            ]:
+                                with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] px-3.5 py-1.5 rounded-lg'):
+                                    ui.label(titulo).classes('text-[9px] text-[#71717A] font-bold')
+                                    ui.label(valor).classes(f'text-sm font-bold {cor}')
+
+                    if not DADOS.G or not DADOS.cluster_info:
+                        ui.label("Nenhum dado ingerido ainda. Use o ícone de banco de dados no rail esquerdo.").classes('text-[#71717A] mt-4')
+                        return
+
+                    def _on_busca_dash_change(e):
+                        st.termo_busca_dash = e.value or ""
+                        secao_investigacoes.refresh()
+
+                    ipt_busca_dash = ui.input(value=st.termo_busca_dash, placeholder='Search investigations, CPFs, phones, plates...').props('dense outlined').classes('w-full bg-[#18181A] text-xs')
+                    ipt_busca_dash.on_value_change(_on_busca_dash_change)
+
+                    def _buscar_no_enter():
+                        termo = (ipt_busca_dash.value or "").strip()
+                        if len(termo) < 3:
+                            return
+                        termo_clean = re.sub(r'[^a-zA-Z0-9]', '', termo).upper()
+                        alvos = [n for n in DADOS.G.nodes if termo_clean in n]
+                        if alvos:
+                            for c in DADOS.cluster_info:
+                                if alvos[0] in c["nodes"]:
+                                    abrir_caso_overview(c["id"])
+                                    return
+                        res, df_d, ents = investigar_alvo_em_criacoes_diarias(termo)
+                        if res and res["total_assistencias"] > 0:
+                            ui.notify(f"Alvo localizado em Criações! {res['total_assistencias']} assistências.")
+                            abrir_descoberta(res, df_d, ents)
+                        else:
+                            ui.notify("Nenhum acionamento localizado.")
+
+                    ipt_busca_dash.on('keydown.enter', lambda e: _buscar_no_enter())
+
+                    if DADOS.radar_alertas:
+                        with ui.expansion(f"{len(DADOS.radar_alertas)} células reincidentes precisam de atenção", icon='warning').classes('w-full bg-[#18181A] border border-[#2B2B2F] rounded-lg'):
+                            with ui.row().classes('gap-2 flex-wrap'):
+                                for cid, total_hits in list(DADOS.radar_alertas.items())[:4]:
+                                    c_obj_r = next((c for c in DADOS.cluster_info if c['id'] == cid), None)
+                                    if c_obj_r:
+                                        nome_q = DADOS.casos_cadastrados.get(cid, {}).get('nome') or c_obj_r['hub_label'][:20]
+                                        ui.button(f"{nome_q} (+{total_hits})", on_click=lambda cid=cid: abrir_caso_overview(cid)).classes(
+                                            'bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F]'
+                                        )
+
+                    @ui.refreshable
+                    def secao_investigacoes():
+                        mapa_scores = obter_scores_triagem(DADOS.cluster_info)
+                        casos_processados = []
+                        for c in DADOS.cluster_info[:150]:
+                            info_c = DADOS.casos_cadastrados.get(c['id'], {})
+                            status_c = info_c.get('status', 'Em Investigação')
+                            ds = mapa_scores.get(c['id'], {"score": 0, "nivel": "BAIXO"})
+                            casos_processados.append({
+                                "id": c['id'], "cluster": c, "info": info_c, "status": status_c,
+                                "score": ds["score"], "nivel": ds["nivel"], "em_radar": c['id'] in DADOS.radar_alertas,
+                                "nomeado": bool(info_c.get('nome'))
+                            })
+
+                        qtd_todos = len(casos_processados)
+                        qtd_ativos = len([cp for cp in casos_processados if cp["status"] in STATUS_ATIVOS])
+                        qtd_encerrados = len([cp for cp in casos_processados if cp["status"] in STATUS_ENCERRADOS])
+                        qtd_nomeados = len([cp for cp in casos_processados if cp["nomeado"]])
+                        qtd_nao_nomeados = len([cp for cp in casos_processados if not cp["nomeado"]])
+
+                        with ui.row().classes('w-full items-end gap-3 flex-wrap'):
+                            with ui.column().classes('gap-1'):
+                                ui.label('Status').classes('text-[9px] text-[#71717A] uppercase tracking-wider px-1')
+                                with ui.row().classes('gap-1.5'):
+                                    for label, key, count in [("Todos", "Todos", qtd_todos), ("Ativos", "Ativos", qtd_ativos), ("Encerrados", "Encerrados", qtd_encerrados)]:
+                                        ativo_f = st.filtro_status_dash == key
+                                        ui.button(f"{label} ({count})", on_click=lambda k=key: (setattr(st, 'filtro_status_dash', k), secao_investigacoes.refresh())).props('flat dense no-caps').classes(
+                                            f"px-3 h-7 rounded-full text-xs border {'bg-[#FF7300]/15 text-[#FF7300] border-[#FF7300]/40' if ativo_f else 'bg-[#18181A] text-[#71717A] border-[#2B2B2F] hover:text-white'}"
+                                        )
+
+                            ui.separator().props('vertical').classes('bg-[#2B2B2F] h-8')
+
+                            with ui.column().classes('gap-1'):
+                                ui.label('Batismo').classes('text-[9px] text-[#71717A] uppercase tracking-wider px-1')
+                                with ui.row().classes('gap-1.5'):
+                                    for label, key, count in [("Todos", "Todos", qtd_todos), ("Nomeados", "Nomeados", qtd_nomeados), ("Não Batizados", "Não Batizados", qtd_nao_nomeados)]:
+                                        ativo_b = st.filtro_batismo_dash == key
+                                        ui.button(f"{label} ({count})", on_click=lambda k=key: (setattr(st, 'filtro_batismo_dash', k), secao_investigacoes.refresh())).props('flat dense no-caps').classes(
+                                            f"px-3 h-7 rounded-full text-xs border {'bg-[#FF7300]/15 text-[#FF7300] border-[#FF7300]/40' if ativo_b else 'bg-[#18181A] text-[#71717A] border-[#2B2B2F] hover:text-white'}"
+                                        )
+
+                            ui.separator().props('vertical').classes('bg-[#2B2B2F] h-8')
+
+                            with ui.column().classes('gap-1'):
+                                ui.label('Risco').classes('text-[9px] text-[#71717A] uppercase tracking-wider px-1')
+                                with ui.row().classes('gap-1.5'):
+                                    niveis_risco = ["Todos", "BAIXO", "MÉDIO", "ALTO", "CRÍTICO"]
+                                    contagem_risco = {niv: len([cp for cp in casos_processados if cp["nivel"] == niv]) for niv in niveis_risco[1:]}
+                                    contagem_risco["Todos"] = qtd_todos
+                                    for niv in niveis_risco:
+                                        ativo_r = st.filtro_risco_dash == niv
+                                        ui.button(f"{niv} ({contagem_risco[niv]})", on_click=lambda n=niv: (setattr(st, 'filtro_risco_dash', n), secao_investigacoes.refresh())).props('flat dense no-caps').classes(
+                                            f"px-3 h-7 rounded-full text-xs border {'bg-[#FF7300]/15 text-[#FF7300] border-[#FF7300]/40' if ativo_r else 'bg-[#18181A] text-[#71717A] border-[#2B2B2F] hover:text-white'}"
+                                        )
+
+                            with ui.row().classes('gap-1 ml-auto items-end'):
+                                for icn, modo in [('grid_view', 'Grade'), ('view_list', 'Lista')]:
+                                    ativo_v = st.modo_visualizacao_casos == modo
+                                    ui.button(icon=icn, color=None, on_click=lambda m=modo: (setattr(st, 'modo_visualizacao_casos', m), secao_investigacoes.refresh())).props('flat dense round').classes(
+                                        f"w-8 h-8 rounded-md {'bg-[#FF7300]/15 text-[#FF7300]' if ativo_v else 'text-[#71717A] hover:text-white'}"
+                                    ).tooltip(modo)
+
+                        ui.label('Fila de Investigação Priorizada').classes('text-sm font-bold text-gray-300 mt-1')
+
+                        casos_filtrados = casos_processados
+                        if st.termo_busca_dash.strip():
+                            termo_norm = st.termo_busca_dash.strip().upper()
+                            casos_filtrados = [
+                                cp for cp in casos_filtrados
+                                if termo_norm in (cp['info'].get('nome') or '').upper()
+                                or termo_norm in cp['cluster']['hub_label'].upper()
+                                or termo_norm in cp['id'].upper()
+                            ]
+                        if st.filtro_status_dash == "Ativos":
+                            casos_filtrados = [cp for cp in casos_filtrados if cp["status"] in STATUS_ATIVOS]
+                        elif st.filtro_status_dash == "Encerrados":
+                            casos_filtrados = [cp for cp in casos_filtrados if cp["status"] in STATUS_ENCERRADOS]
+
+                        if st.filtro_batismo_dash == "Nomeados":
+                            casos_filtrados = [cp for cp in casos_filtrados if cp["nomeado"]]
+                        elif st.filtro_batismo_dash == "Não Batizados":
+                            casos_filtrados = [cp for cp in casos_filtrados if not cp["nomeado"]]
+
+                        if st.filtro_risco_dash != "Todos":
+                            casos_filtrados = [cp for cp in casos_filtrados if cp["nivel"] == st.filtro_risco_dash]
+                        casos_filtrados.sort(key=lambda cp: (cp["score"], cp["cluster"]["tamanho"]), reverse=True)
+
+                        if not casos_filtrados:
+                            ui.label('Nenhum caso corresponde aos filtros selecionados.').classes('text-[#71717A]')
+                        elif st.modo_visualizacao_casos == "Grade":
+                            with ui.grid().classes('grid-cols-3 gap-4 w-full mt-2'):
+                                for cp in casos_filtrados[:45]:
+                                    c = cp["cluster"]
+                                    nome = cp["info"].get('nome') or 'Não Batizado'
+                                    cor_st = CORES_STATUS.get(cp["status"], '#8B95A5')
+                                    cor_r = CORES_RISCO.get(cp["nivel"], '#8B95A5')
+
+                                    qtd_sketches_card = len(listar_sketches_do_caso(cp['id'])) or 1
+                                    qtd_pareceres_card = len(carregar_historico_pareceres(cp['id']))
+
+                                    with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] hover:border-[#FF7300]/60 p-4 rounded-xl flex flex-col justify-between h-36 cursor-pointer shadow-xs transition-all').on('click', lambda cid=cp['id']: abrir_caso_overview(cid)):
+                                        with ui.row().classes('w-full items-center justify-between'):
+                                            with ui.row().classes('items-center gap-1.5'):
+                                                ui.element('div').classes('w-2 h-2 rounded-full').style(f'background-color:{cor_st};')
+                                                ui.label(cp["status"]).classes('text-[11px] font-semibold').style(f'color:{cor_st};')
+                                            ui.badge(f"{cp['nivel']} · {cp['score']}").style(f'background-color:{cor_r}22;color:{cor_r};border:1px solid {cor_r}55;font-size:10px;padding:2px 6px;border-radius:4px;')
+
+                                        with ui.column().classes('gap-0.5 w-full'):
+                                            ui.label(nome).classes('text-sm font-semibold text-white tracking-tight truncate w-full')
+                                            ui.label(c['hub_label']).classes('text-[11px] text-[#71717A] truncate w-full')
+
+                                        with ui.row().classes('w-full items-center gap-4 text-xs text-[#71717A] mt-auto pt-1'):
+                                            with ui.row().classes('items-center gap-1'):
+                                                ui.icon('hub', size='14px').classes('text-[#71717A]')
+                                                ui.label(str(qtd_sketches_card)).classes('text-xs text-gray-300 font-medium')
+                                            with ui.row().classes('items-center gap-1'):
+                                                ui.icon('description', size='14px').classes('text-[#71717A]')
+                                                ui.label(str(qtd_pareceres_card)).classes('text-xs text-gray-300 font-medium')
+                        else:
+                            for cp in casos_filtrados[:45]:
+                                c = cp["cluster"]
+                                cor_st = CORES_STATUS.get(cp["status"], '#8B95A5')
+                                cor_r = CORES_RISCO.get(cp["nivel"], '#8B95A5')
+                                qtd_sketches_card = len(listar_sketches_do_caso(cp['id'])) or 1
+                                qtd_pareceres_card = len(carregar_historico_pareceres(cp['id']))
+
+                                with ui.row().classes('w-full items-center justify-between p-3 rounded-lg bg-[#18181A] border border-[#2B2B2F] hover:border-[#FF7300]/40 cursor-pointer transition-colors mb-2').on('click', lambda cid=cp['id']: abrir_caso_overview(cid)):
+                                    with ui.column().classes('gap-0.5'):
+                                        ui.label(cp["info"].get('nome') or 'Não Batizado').classes('text-sm font-semibold text-white')
+                                        ui.label(c['hub_label']).classes('text-[11px] text-[#71717A]')
+                                    with ui.row().classes('items-center gap-3'):
+                                        with ui.row().classes('items-center gap-1'):
+                                            ui.icon('hub', size='14px').classes('text-[#71717A]')
+                                            ui.label(str(qtd_sketches_card)).classes('text-xs text-gray-300 font-medium')
+                                        with ui.row().classes('items-center gap-1'):
+                                            ui.icon('description', size='14px').classes('text-[#71717A]')
+                                            ui.label(str(qtd_pareceres_card)).classes('text-xs text-gray-300 font-medium')
+                                        ui.element('div').classes('w-2 h-2 rounded-full').style(f'background-color:{cor_st};')
+                                        ui.label(cp["status"]).classes('text-[11px]').style(f'color:{cor_st};')
+                                        ui.badge(f"{cp['nivel']} · {cp['score']}").style(f'background-color:{cor_r}22;color:{cor_r};border:1px solid {cor_r}55;font-size:10px;padding:2px 6px;border-radius:4px;')
+
+                    secao_investigacoes()
+
+        # ================================================================
+        # TELA: BASE MESTRA
+        # ================================================================
+        elif st.tela_ativa == "Base Mestra":
+            with ui.column().classes('w-full h-full overflow-y-auto custom-scroll'):
+                with ui.column().classes('w-full max-w-7xl mx-auto p-8 gap-4'):
+                    with ui.row().classes('w-full items-center justify-between'):
+                        with ui.column().classes('gap-1'):
+                            ui.label('Base Mestra de Entidades Monitoradas').classes('text-xl font-bold text-white tracking-tight')
+                            ui.label('Repositório permanente de suspeitos. Varre retrospectivamente todo o acervo de Criações Diárias.').classes('text-xs text-[#71717A]')
+                        ui.button('Sincronizar com a Blacklist', icon='sync', on_click=lambda: (semear_base_mestra_da_blacklist(), ui.notify('Sincronizado!'), workspace.refresh())).classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F]')
+
+                    with ui.expansion('Cadastrar Nova Entidade Suspeita', icon='person_add').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg'):
+                        with ui.row().classes('w-full gap-3 mt-2'):
+                            sel_novo_tipo = ui.select(["TELEFONE", "PLACA", "CPF"], value="TELEFONE", label='Tipo de Entidade:').props('dense outlined').classes('flex-1 text-xs')
+                            ipt_novo_val = ui.input(label='Dado / Número / Placa:', placeholder='Ex: (11) 97000-1122 ou ABC-1234').props('dense outlined').classes('flex-1 text-xs')
+                            ipt_novo_nome = ui.input(label='Nome / Apelido / Titular:', placeholder='Ex: Marcos V. (Laranja)').props('dense outlined').classes('flex-1 text-xs')
+                        with ui.row().classes('w-full gap-3'):
+                            ipt_novo_caso = ui.input(label='Quadrilha / Operação Associada:', placeholder='Ex: Quadrilha Santo André').props('dense outlined').classes('flex-1 text-xs')
+                            sel_novo_status = ui.select(["Ativo", "Confirmado Fraude", "Em Monitoramento", "Inativo"], value="Ativo", label='Status:').props('dense outlined').classes('flex-1 text-xs')
+                            ipt_novo_analista = ui.input(label='Analista Responsável:', placeholder='Seu nome').props('dense outlined').classes('flex-1 text-xs')
+                        txt_novo_motivo = ui.textarea(label='Motivo da Inclusão / Modus Operandi:', placeholder='Ex: Solicitou guinchos sequenciais para o mesmo destino...').props('dense outlined').classes('w-full text-xs mt-2')
+
+                        def _salvar_suspeito():
+                            ok, msg, total_hits = cadastrar_entidade_suspeita(
+                                sel_novo_tipo.value, ipt_novo_val.value, ipt_novo_nome.value,
+                                txt_novo_motivo.value, ipt_novo_caso.value,
+                                status=sel_novo_status.value, analista=ipt_novo_analista.value
+                            )
+                            if ok:
+                                ui.notify(f"{msg} Varredura retrospectiva: {total_hits} assistências identificadas.")
+                                workspace.refresh()
+                            else:
+                                ui.notify(msg, type="negative")
+
+                        ui.button('Salvar na Base Mestra & Varrer Histórico', on_click=_salvar_suspeito).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md mt-3')
+
+                    with ui.row().classes('w-full gap-3 items-end'):
+                        sel_f_tipo = ui.select(["TODOS", "TELEFONE", "PLACA", "CPF"], value="TODOS", label='Filtrar Tipo:').props('dense outlined').classes('w-40 text-xs')
+                        sel_f_status = ui.select(["TODOS", "Ativo", "Confirmado Fraude", "Em Monitoramento", "Inativo", "Removido"], value="TODOS", label='Filtrar Status:').props('dense outlined').classes('w-52 text-xs')
+                        ipt_f_busca = ui.input(label='Buscar na Base Mestra:', placeholder='Digite dado, nome ou quadrilha...').props('dense outlined').classes('flex-1 text-xs')
+
+                    box_mestra = ui.column().classes('w-full gap-2')
+
+                    def _atualizar_base_mestra():
+                        box_mestra.clear()
+                        suspeitos = listar_entidades_suspeitas(sel_f_tipo.value, sel_f_status.value, ipt_f_busca.value)
+                        with box_mestra:
+                            if suspeitos:
+                                ui.label(f"Exibindo {len(suspeitos)} entidades suspeitas catalogadas.").classes('text-xs text-[#71717A]')
+                                df_m = pd.DataFrame(suspeitos)[['id', 'tipo', 'valor_formatado', 'nome_referencia', 'quadrilha_exibicao', 'status', 'total_historico', 'data_cadastro', 'analista']]
+                                df_m.columns = ['ID', 'Tipo', 'Dado Monitorado', 'Titular/Apelido', 'Quadrilha/Caso', 'Status', 'Histórico', 'Data Cadastro', 'Analista']
+                                with ui.element('div').classes('w-full').style('max-height: calc(100vh - 340px); overflow: auto;'):
+                                    ui.table.from_pandas(_sanitizar_df_para_tabela(df_m), pagination=15).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl')
+
+                                with ui.expansion('Auditar / Remover Entidade Específica', icon='search').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg'):
+                                    opcoes_ent = {s['id']: f"[{s['tipo']}] {s['valor_formatado']} - {s['nome_referencia']} ({s['status']})" for s in suspeitos}
+                                    sel_ent_audit = ui.select(opcoes_ent, label='Selecione a entidade para auditoria:').props('dense outlined').classes('w-full text-xs mt-2')
+                                    ipt_motivo_rem = ui.input(label='Motivo da remoção/arquivamento:', placeholder='Ex: Terceiro inocente comprovado').props('dense outlined').classes('w-full text-xs mt-2')
+
+                                    resultado_audit_box = ui.column().classes('w-full gap-2 mt-3')
+
+                                    with ui.row().classes('gap-2 mt-2'):
+                                        def _executar_remocao():
+                                            if not sel_ent_audit.value:
+                                                return
+                                            remover_entidade_suspeita(sel_ent_audit.value, ipt_motivo_rem.value)
+                                            ui.notify("Entidade marcada como 'Removido' (cadeia de custódia preservada).")
+                                            _atualizar_base_mestra()
+
+                                        ui.button('Excluir Entidade', on_click=_executar_remocao).classes('bg-red-900/60 hover:bg-red-800 text-white text-xs h-8 rounded-md px-3 border border-red-700/50')
+
+                                        def _carregar_ocorrencias():
+                                            resultado_audit_box.clear()
+                                            if not sel_ent_audit.value:
+                                                return
+                                            ent_alvo = next((s for s in suspeitos if s['id'] == sel_ent_audit.value), None)
+                                            if not ent_alvo:
+                                                return
+                                            df_ocorr = consultar_todas_ocorrencias_entidade(ent_alvo['tipo'], ent_alvo['valor'])
+                                            with resultado_audit_box:
+                                                if not df_ocorr.empty:
+                                                    ui.label(f"{len(df_ocorr)} Assistências Encontradas (Blacklist + Criações Diárias):").classes('text-xs font-bold text-gray-300')
+                                                    ui.table.from_pandas(_sanitizar_df_para_tabela(df_ocorr), pagination=10).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl')
+                                                    ui.button('Baixar Ocorrências (.csv)', on_click=lambda: ui.download(
+                                                        df_ocorr.to_csv(index=False).encode('utf-8'), f"Historico_{ent_alvo['valor']}.csv"
+                                                    )).classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F] mt-2')
+                                                else:
+                                                    ui.label('Nenhuma ocorrência encontrada.').classes('text-xs text-[#71717A]')
+
+                                        ui.button('Ver Ocorrências', on_click=_carregar_ocorrencias).classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs h-8 rounded-md px-3 border border-[#2B2B2F]')
+                            else:
+                                ui.label('Nenhuma entidade cadastrada. Sincronize com a Blacklist ou cadastre manualmente acima.').classes('text-[#71717A]')
+
+                    ipt_f_busca.on('keydown.enter', lambda e: _atualizar_base_mestra())
+                    ui.button('Filtrar', on_click=_atualizar_base_mestra).props('dense').classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F]')
+                    _atualizar_base_mestra()
+
+        # ================================================================
+        # TELA: WATCHLIST
+        # ================================================================
+        elif st.tela_ativa == "Watchlist":
+            with ui.column().classes('w-full h-full overflow-y-auto custom-scroll'):
+                with ui.column().classes('w-full max-w-7xl mx-auto p-8 gap-4'):
+                    ui.label('Watchlist de Municípios de Alto Risco').classes('text-xl font-bold text-white tracking-tight')
+                    ui.label('Cadastro de praças com predominância de fraude. Alimenta multiplicadores do Fraud Score.').classes('text-xs text-[#71717A]')
+
+                    with ui.expansion('Cadastrar Novo Município na Watchlist', icon='add_location').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg'):
+                        with ui.row().classes('w-full gap-3 mt-2'):
+                            ipt_cidade_nova = ui.input(label='Nome do Município:', placeholder='Ex: Santa Quitéria').props('dense outlined').classes('flex-1 text-xs')
+                            sel_uf_nova = ui.select(UFS_BRASIL, value='CE', label='UF:').props('dense outlined').classes('w-28 text-xs')
+                        with ui.row().classes('w-full gap-3'):
+                            ipt_motivo_cid = ui.input(label='Motivo / Padrão Mapeado:', placeholder='Ex: Frequência atípica de guinchos e colusão regional').props('dense outlined').classes('flex-1 text-xs')
+                            ipt_analista_cid = ui.input(label='Analista Responsável:', placeholder='Seu nome').props('dense outlined').classes('w-56 text-xs')
+
+                        def _salvar_cidade():
+                            ok, msg = cadastrar_cidade_risco(ipt_cidade_nova.value, sel_uf_nova.value, ipt_motivo_cid.value, ipt_analista_cid.value)
+                            if ok:
+                                DADOS.recarregar()
+                                ui.notify(msg)
+                                workspace.refresh()
+                            else:
+                                ui.notify(msg, type="negative")
+
+                        ui.button('Salvar Município na Watchlist', on_click=_salvar_cidade).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md mt-3')
+
+                    cidades = listar_cidades_risco()
+                    if cidades:
+                        ui.label(f"Exibindo {len(cidades)} municípios monitorados.").classes('text-xs text-[#71717A]')
+                        df_c = pd.DataFrame(cidades)[['id', 'cidade', 'uf', 'motivo', 'analista', 'data_cadastro']]
+                        df_c.columns = ['ID', 'Município', 'UF', 'Motivo/Modus Operandi', 'Analista', 'Data Cadastro']
+                        with ui.element('div').classes('w-full').style('max-height: calc(100vh - 460px); overflow: auto;'):
+                            ui.table.from_pandas(_sanitizar_df_para_tabela(df_c), pagination=15).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl')
+
+                        with ui.expansion('Excluir Município da Watchlist', icon='delete').classes('w-full bg-[#141416] border border-[#2B2B2F] rounded-lg'):
+                            opcoes_del = {c['id']: f"#{c['id']} - {c['cidade']}/{c['uf']}" for c in cidades}
+                            sel_del_cid = ui.select(opcoes_del, label='Selecione o município para remover:').props('dense outlined').classes('w-full text-xs mt-2')
+
+                            def _remover_cidade():
+                                if not sel_del_cid.value: return
+                                remover_cidade_risco(sel_del_cid.value)
+                                DADOS.recarregar()
+                                ui.notify("Município removido.")
+                                workspace.refresh()
+
+                            ui.button('Remover Município Selecionado', on_click=_remover_cidade).classes('bg-red-900/60 hover:bg-red-800 text-white text-xs h-8 rounded-md px-3 border border-red-700/50 mt-2')
+                    else:
+                        ui.label('Nenhum município cadastrado na Watchlist de Risco.').classes('text-[#71717A]')
+
+        # ================================================================
+        # TELA: CENTRO DE COMANDO
+        # ================================================================
+        else:
+            with ui.column().classes('w-full h-full overflow-y-auto custom-scroll'):
+                with ui.column().classes('w-full max-w-7xl mx-auto p-8 gap-4'):
+                    ui.label('Centro de Comando Proativo e Radar de Anomalias Territoriais').classes('text-xl font-bold text-white tracking-tight')
+                    ui.label('Detecção estatística de desvios volumétricos municipais, anomalias pet e abusos residenciais.').classes('text-xs text-[#71717A]')
+
+                    df_ano, kpis_ano, mes_ref = obter_radar_anomalias_macro()
+
+                    if df_ano.empty:
+                        ui.label('É necessário ingerir arquivos em Criações Diárias para calcular os baselines territoriais.').classes('text-[#71717A]')
+                    else:
+                        with ui.row().classes('gap-3'):
+                            for titulo, valor, cor in [
+                                ('MUNICÍPIOS', kpis_ano.get('total_anomalias', 0), 'text-red-400'),
+                                ('PET', kpis_ano.get('alertas_pet', 0), 'text-[#C9A66B]'),
+                                ('RESIDENCIAL', kpis_ano.get('alertas_res', 0), 'text-[#6C93B0]'),
+                                ('WATCHLIST', kpis_ano.get('alertas_watchlist', 0), 'text-[#8F86B5]'),
+                            ]:
+                                with ui.card().classes('bg-[#18181A] border border-[#2B2B2F] px-3.5 py-1.5 rounded-lg'):
+                                    ui.label(titulo).classes('text-[9px] text-[#71717A] font-bold')
+                                    ui.label(str(valor)).classes(f'text-sm font-bold {cor}')
+
+                        with ui.tabs().classes('w-full text-xs text-[#71717A] mt-2') as tabs_ano:
+                            tab_mapa_ano = ui.tab('Radar Territorial de Anomalias', icon='public')
+                            tab_tabela_ano = ui.tab('Fila de Anomalias por Município', icon='list')
+
+                        with ui.tab_panels(tabs_ano, value=tab_mapa_ano).classes('w-full bg-transparent p-0 mt-2'):
+                            with ui.tab_panel(tab_mapa_ano).classes('p-0'):
+                                df_mapa_ano = df_ano.dropna(subset=["latitude", "longitude"]).copy()
+                                if not df_mapa_ano.empty:
+                                    df_mapa_ano["raio_calc"] = df_mapa_ano["volume_atual"] * 400
+                                    camada_anomalias = pdk.Layer(
+                                        "ScatterplotLayer", data=df_mapa_ano, get_position="[longitude, latitude]",
+                                        get_color="[192, 98, 95, 190]", get_line_color="[255, 255, 255, 220]",
+                                        line_width_min_pixels=1.5, stroked=True, get_radius="raio_calc",
+                                        radius_min_pixels=7, radius_max_pixels=32, pickable=True, auto_highlight=True
+                                    )
+                                    view_state_ano = pdk.ViewState(
+                                        latitude=float(df_mapa_ano["latitude"].mean()),
+                                        longitude=float(df_mapa_ano["longitude"].mean()),
+                                        zoom=4.2, pitch=0
+                                    )
+                                    tooltip_ano = {
+                                        "html": "<div style='font-family:sans-serif; padding:6px;'><b style='color:#FF9955; font-size:12px;'>{cidade}/{uf}</b><br/><b>Volume Atual:</b> {volume_atual}<br/><b>Média Histórica:</b> {media_hist}<br/><b>Desvio:</b> {desvio_macro}<br/><b>Padrões:</b> <span style='color:#C9A66B;'>{alertas_str}</span></div>",
+                                        "style": {"backgroundColor": "#18181A", "color": "#EDEDED", "border": "1px solid #2B2B2F", "borderRadius": "8px", "fontSize": "11px"}
+                                    }
+                                    deck_ano = pdk.Deck(layers=[camada_anomalias], initial_view_state=view_state_ano, tooltip=tooltip_ano, map_style="dark")
+                                    ui.html(
+                                        f'<iframe srcdoc="{html.escape(deck_ano.to_html(as_string=True))}" style="width:100%;height:560px;border:none;border-radius:12px;"></iframe>',
+                                        sanitize=False
+                                    ).classes('w-full')
+                                else:
+                                    ui.label('Sem coordenadas disponíveis para plotagem das anomalias.').classes('text-[#71717A]')
+
+                            with ui.tab_panel(tab_tabela_ano).classes('p-0'):
+                                with ui.row().classes('w-full gap-3 mb-2 items-end'):
+                                    sel_filtro_alerta = ui.select(
+                                        ["TODOS", "Explosão de Volume Macro", "Anomalia em Serviços Pet", "Salto em Serviços Residenciais", "Município em Watchlist de Risco", "Pico sem Histórico Prévio"],
+                                        value="TODOS", label='Filtrar Categoria de Alerta:'
+                                    ).props('dense outlined').classes('w-72 text-xs')
+                                    ipt_busca_cid_ano = ui.input(label='Buscar Município ou UF:', placeholder='Digite cidade ou estado...').props('dense outlined').classes('flex-1 text-xs')
+
+                                box_tabela_ano = ui.column().classes('w-full')
+
+                                def _atualizar_tabela_ano():
+                                    box_tabela_ano.clear()
+                                    df_view = df_ano.copy()
+                                    if sel_filtro_alerta.value != "TODOS":
+                                        df_view = df_view[df_view["alertas"].apply(lambda lst: sel_filtro_alerta.value in lst)]
+                                    if ipt_busca_cid_ano.value:
+                                        b_norm = ipt_busca_cid_ano.value.upper().strip()
+                                        df_view = df_view[df_view["cidade"].str.upper().str.contains(b_norm) | df_view["uf"].str.upper().str.contains(b_norm)]
+                                    with box_tabela_ano:
+                                        if df_view.empty:
+                                            ui.label('Nenhum município corresponde ao filtro.').classes('text-[#71717A]')
+                                        else:
+                                            df_exib = df_view[['cidade', 'uf', 'mes_ref', 'volume_atual', 'media_hist', 'desvio_macro', 'meses_ativos_hist', 'pet_atual', 'res_atual', 'alertas_str', 'watchlist']].copy()
+                                            df_exib.columns = ['Município', 'UF', 'Mês Ref.', 'Volume Atual', 'Média Histórica', 'Desvio Relativo', 'Meses Ativos', 'Pet (Mês)', 'Residencial (Mês)', 'Padrões', 'Watchlist']
+                                            with ui.element('div').classes('w-full').style('max-height: calc(100vh - 460px); overflow: auto;'):
+                                                ui.table.from_pandas(_sanitizar_df_para_tabela(df_exib), pagination=15).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-xl')
+
+                                ipt_busca_cid_ano.on('keydown.enter', lambda e: _atualizar_tabela_ano())
+                                ui.button('Filtrar', on_click=_atualizar_tabela_ano).props('dense').classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F] mb-2')
+                                _atualizar_tabela_ano()
+
+                        ui.label('Desdobramento Investigativo da Anomalia Municipal').classes('text-sm font-bold text-gray-300 mt-4')
+                        ui.label('Isole um município alertado para consolidar os principais operadores e autuar um caso de conluio regional.').classes('text-xs text-[#71717A] mb-2')
+
+                        cidades_opcoes = {}
+                        for _, r in df_ano.iterrows():
+                            rot = f"{r['cidade']}/{r['uf']} ({r['volume_atual']} acionamentos - {r['desvio_macro']})"
+                            cidades_opcoes[rot] = r
+
+                        if cidades_opcoes:
+                            sel_cidade_alerta = ui.select(list(cidades_opcoes.keys()), value=list(cidades_opcoes.keys())[0], label='Selecione a Praça em Alerta:').props('dense outlined').classes('w-full text-xs')
+
+                            box_infratores = ui.column().classes('w-full gap-2 mt-3')
+
+                            def _carregar_infratores():
+                                box_infratores.clear()
+                                anomalia_alvo = cidades_opcoes[sel_cidade_alerta.value]
+                                dados_inf = extrair_top_infratores_municipio(
+                                    cidade=anomalia_alvo["cidade"], uf=anomalia_alvo["uf"],
+                                    cidade_banco=anomalia_alvo.get("cidade_banco", "")
+                                )
+                                with box_infratores:
+                                    if dados_inf["total_ocorrencias"] > 0:
+                                        with ui.row().classes('w-full gap-4'):
+                                            with ui.column().classes('flex-1 gap-1'):
+                                                ui.label('Top Titulares (CPF):').classes('text-xs font-bold text-gray-300')
+                                                ui.table.from_pandas(_sanitizar_df_para_tabela(dados_inf["top_cpfs"])).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-lg')
+                                            with ui.column().classes('flex-1 gap-1'):
+                                                ui.label('Top Telefones (TEL):').classes('text-xs font-bold text-gray-300')
+                                                ui.table.from_pandas(_sanitizar_df_para_tabela(dados_inf["top_tels"])).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-lg')
+                                            with ui.column().classes('flex-1 gap-1'):
+                                                ui.label('Top Veículos (PLACA):').classes('text-xs font-bold text-gray-300')
+                                                ui.table.from_pandas(_sanitizar_df_para_tabela(dados_inf["top_placas"])).classes('w-full bg-[#18181A] border border-[#2B2B2F] text-xs rounded-lg')
+
+                                        def _autuar_caso():
+                                            resumo_funil = {
+                                                "alvo_buscado": f"Conluio Regional - {anomalia_alvo['cidade']}/{anomalia_alvo['uf']}",
+                                                "termo_limpo": anomalia_alvo["cidade"],
+                                                "total_assistencias": dados_inf["total_ocorrencias"],
+                                                "qtd_cpfs": len(dados_inf["top_cpfs"]), "qtd_tels": len(dados_inf["top_tels"]),
+                                                "qtd_placas": len(dados_inf["top_placas"]),
+                                            }
+                                            ents_funil = {
+                                                "cpfs": list(dados_inf["top_cpfs"]["cpf"]) if not dados_inf["top_cpfs"].empty else [],
+                                                "tels": list(dados_inf["top_tels"]["telefone"]) if not dados_inf["top_tels"].empty else [],
+                                                "placas": list(dados_inf["top_placas"]["placa"]) if not dados_inf["top_placas"].empty else [],
+                                            }
+                                            abrir_descoberta(resumo_funil, dados_inf["df_completo"], ents_funil)
+
+                                        ui.button('Autuar Caso a partir Desta Anomalia Territorial', on_click=_autuar_caso).classes('w-full bg-[#FF7300] hover:bg-[#E0670A] text-white text-xs font-semibold h-8 rounded-md mt-2')
+                                    else:
+                                        ui.label('Nenhuma ocorrência detalhada localizada para os parâmetros deste município.').classes('text-[#71717A]')
+
+                            ui.button('Investigar Município Selecionado', on_click=_carregar_infratores).classes('bg-[#222225] hover:bg-[#2B2B2F] text-gray-200 text-xs px-3 h-8 rounded-md border border-[#2B2B2F] mt-2')
+                            _carregar_infratores()
+
+    # -------------------------------------------------------------------
+    # MONTAGEM FINAL: GAVETA LATERAL MAIOR + WORKSPACE
+    # -------------------------------------------------------------------
+    with ui.row().classes('w-full h-full flex-nowrap gap-0'):
+        sidebar_container()
+        with ui.column().classes('flex-1 h-full overflow-hidden'):
+            workspace()
+
+ui.run(title="LCFO Forensic Intelligence", dark=True, port=8501, reload=False)
