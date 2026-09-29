@@ -1,0 +1,2180 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>LCFO Grafo Bidirecional</title>
+    <script type="text/javascript" src="vis-network.min.js"></script>
+    <script type="text/javascript">
+        if (typeof vis === "undefined") {
+            document.write('<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"><\/script>');
+        }
+    </script>
+    <style>
+        :root {
+            --bg: #121214; --surface: #18181A; --card: #222225; --card-glass: rgba(24, 24, 26, 0.92);
+            --border: #2B2B2F; --text: #EDEDED; --text-muted: #71717A; --primary: #FF7300;
+            --canvas-accent: #FF7300;
+        }
+        [data-theme="light"] {
+            --bg: #FCFCFC; --surface: #FCFCFC; --card: #FFFFFF; --card-glass: rgba(255, 255, 255, 0.90);
+            --border: #DADCE3; --text: #454545; --text-muted: #8A8D99; --primary: #FF7300;
+            --canvas-accent: #FF7300;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        html, body { background: var(--bg); overflow: hidden; width: 100%; height: 100%; position: relative; }
+        #network { width: 100%; height: 100%; background-color: var(--bg); }
+
+        .top-right-controls {
+            position: absolute; top: 12px; right: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        .tr-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 30px; height: 28px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; position: relative; outline: none;
+        }
+        .tr-btn:hover { background: var(--surface); color: var(--text); }
+        .tr-btn.active { background: rgba(255, 115, 0, 0.2); color: var(--primary); }
+
+        .toolbar-separator { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+
+        .export-menu {
+            position: absolute; top: 36px; right: 0; width: 165px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            display: flex; flex-direction: column; gap: 2px; z-index: 50;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .export-item { padding: 7px 10px; font-size: 11px; color: var(--text); cursor: pointer; border-radius: 4px; }
+        .export-item:hover { background: var(--primary); color: #FFFFFF; }
+
+        .bottom-left-controls {
+            position: absolute; bottom: 14px; left: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .bl-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 30px; height: 28px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .bl-btn:hover { background: var(--surface); color: var(--primary); }
+
+        .left-rail {
+            position: absolute; top: 50%; left: 14px; transform: translateY(-50%); z-index: 25;
+            display: flex; flex-direction: column; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 6px 4px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .rail-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 32px; height: 30px;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none; position: relative;
+        }
+        .rail-btn:hover { background: var(--surface); color: var(--primary); }
+        .rail-btn.active { background: var(--primary); color: #FFFFFF; }
+        .rail-separator { width: 20px; height: 1px; background: var(--border); margin: 3px auto; }
+
+        .rail-select-group { position: relative; display: flex; flex-direction: column; align-items: center; }
+        .rail-chevron-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 32px; height: 14px;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            border-radius: 0 0 6px 6px; transition: 0.15s; margin-top: -4px;
+        }
+        .rail-chevron-btn:hover { color: var(--primary); background: var(--surface); }
+        .selecao-submenu {
+            display: none; position: absolute; left: 42px; top: 0; z-index: 40;
+            background: var(--card-glass); border: 1px solid var(--border); border-radius: 8px;
+            padding: 4px; min-width: 120px; box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            flex-direction: column; gap: 2px;
+        }
+        .selecao-submenu-item {
+            display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 5px;
+            cursor: pointer; font-size: 11px; color: var(--text); white-space: nowrap;
+        }
+        .selecao-submenu-item:hover { background: var(--surface); }
+        .selecao-submenu-item.active { color: var(--primary); background: rgba(255,115,0,0.12); font-weight: 700; }
+
+        .rail-badge {
+            position: absolute; top: -3px; right: -3px; z-index: 2;
+            background: var(--primary); color: #FFFFFF; font-size: 9px; font-weight: 700;
+            width: 15px; height: 15px; border-radius: 50%;
+            display: none; align-items: center; justify-content: center;
+            box-shadow: 0 0 0 2px var(--card-glass); pointer-events: none;
+        }
+
+        .selection-banner {
+            position: absolute; top: 14px; left: 58px; z-index: 25;
+            background: rgba(255, 115, 0, 0.18); border: 1px solid rgba(255, 115, 0, 0.4);
+            color: #FF7300; border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600;
+            display: flex; align-items: center; gap: 6px; pointer-events: none;
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        }
+
+        .search-panel {
+            position: absolute; left: 60px; z-index: 25; width: 210px;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 8px; padding: 6px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+        }
+        #search-panel { top: 50%; transform: translateY(-50%); }
+        .search-input-wrap { position: relative; display: flex; align-items: center; }
+        .search-panel input {
+            width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+            padding: 6px 24px 6px 8px; border-radius: 4px; font-size: 11px; outline: none;
+        }
+        .search-panel input:focus { border-color: var(--primary); }
+        .search-clear-btn {
+            position: absolute; right: 6px; background: transparent; border: none;
+            color: var(--text-muted); cursor: pointer; font-size: 14px; display: none; line-height: 1;
+        }
+        .search-results { overflow-y: auto; max-height: 220px; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+        .search-result-item {
+            background: var(--surface); border: 1px solid var(--border); padding: 6px 8px;
+            border-radius: 4px; font-size: 11px; color: var(--text); cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .search-result-item:hover { border-color: var(--primary); color: var(--primary); }
+
+        .filter-popover-title {
+            font-size: 11px; font-weight: 700; color: var(--text);
+            padding: 4px 4px 8px 4px; text-transform: uppercase; letter-spacing: 0.3px;
+        }
+        .filter-row {
+            display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; color: var(--text);
+            transition: background 0.12s;
+        }
+        .filter-row:hover { background: rgba(255,255,255,0.06); }
+        .filter-row input[type="checkbox"] { accent-color: var(--primary); width: 14px; height: 14px; flex-shrink: 0; }
+
+        .minimap-container {
+            position: absolute; bottom: 14px; right: 14px; z-index: 20;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 6px; padding: 4px; pointer-events: none;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        #minimap-canvas { display: block; border-radius: 3px; }
+
+        .drawer {
+            position: absolute; top: 0; right: 0; width: 370px; height: 100%;
+            background: var(--card-glass); border-left: 1px solid var(--border);
+            box-shadow: -10px 0 30px rgba(0,0,0,0.5); z-index: 50; display: flex; flex-direction: column;
+            transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            color: var(--text); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .drawer.open { transform: translateX(0); }
+        .drawer-resize-handle {
+            position: absolute; left: -4px; top: 0; width: 8px; height: 100%; cursor: ew-resize; z-index: 60;
+        }
+        .drawer-header {
+            padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+        }
+        .drawer-close-btn { background: transparent; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+        .drawer-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
+        .drawer-tabs { display: flex; border-bottom: 1px solid var(--border); }
+        .drawer-tab {
+            flex: 1; padding: 9px; text-align: center; font-size: 11px; font-weight: 600;
+            color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+            transition: color 0.15s, border-bottom-color 0.15s;
+        }
+        .drawer-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .drawer-tab-content { display: none; flex: 1; overflow-y: auto; padding: 14px 16px; }
+        .drawer-tab-content.active { display: block; }
+        .drawer-section { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+        .drawer-field { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+        .drawer-field:last-child { border-bottom: none; }
+        .field-label { color: var(--text-muted); }
+        .field-value { color: var(--text); font-weight: 600; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .enrich-cta-btn {
+            margin: 12px 16px 6px 16px; background: var(--primary); border: none;
+            color: #FFFFFF; padding: 8px 12px; border-radius: 6px; font-weight: 700;
+            font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+        }
+        .neighbors-preview-wrap { display: flex; justify-content: center; margin: 8px 0; }
+        .neighbor-item {
+            display: flex; align-items: center; justify-content: space-between;
+            background: var(--surface); border: 1px solid var(--border); padding: 8px 10px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; margin-bottom: 6px;
+        }
+        .neighbor-item:hover { border-color: var(--primary); }
+
+        .select-rect {
+            position: absolute; border: 1.5px dashed var(--canvas-accent); background: rgba(255,115,0,0.1);
+            z-index: 15; pointer-events: none; display: none;
+        }
+        .lasso-svg {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            z-index: 15; pointer-events: none; display: none;
+        }
+
+        .neighborhood-banner {
+            position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 35;
+            background: rgba(24, 24, 26, 0.95); border: 1px solid var(--primary);
+            border-radius: 8px; padding: 5px 12px; font-size: 11px; color: var(--text);
+            display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .neighborhood-restore-btn {
+            background: var(--primary); border: none; color: #fff; padding: 2px 8px;
+            border-radius: 4px; font-size: 10px; font-weight: 700; cursor: pointer;
+        }
+
+        .path-panel {
+            position: absolute; top: 58px; right: 14px; z-index: 45;
+            width: 270px; max-height: 380px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            display: flex; flex-direction: column; overflow: hidden;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .path-header {
+            padding: 8px 12px; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .path-body { padding: 8px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+        .path-node-btn {
+            width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px;
+            background: transparent; border: 1px solid transparent; color: var(--text);
+            display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11px;
+        }
+        .path-node-btn:hover { background: var(--surface); border-color: var(--border); }
+        .path-edge-line {
+            display: flex; align-items: center; gap: 6px; padding: 1px 0 1px 18px;
+            font-size: 10px; color: var(--text-muted); font-weight: 600;
+        }
+
+        .modal-backdrop {
+            position: absolute; inset: 0; background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+            z-index: 1000; display: flex; align-items: center; justify-content: center;
+        }
+        .modal-card {
+            background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+            box-shadow: 0 12px 36px rgba(0,0,0,0.7); width: 380px; padding: 18px 20px;
+            display: flex; flex-direction: column;
+        }
+        .modal-header {
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+        }
+        .modal-title { font-size: 15px; font-weight: 700; color: var(--text); }
+        .modal-close { background: transparent; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+        .modal-close:hover { color: var(--text); }
+        .modal-body { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 18px; }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 8px; }
+        .modal-btn-cancel {
+            background: transparent; border: 1px solid var(--border); border-radius: 6px;
+            color: var(--text); padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .modal-btn-cancel:hover { background: var(--surface); border-color: var(--text-muted); }
+        .modal-btn-continue {
+            background: var(--primary); border: none; border-radius: 6px;
+            color: #FFFFFF; padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .modal-btn-continue:hover { background: #E0670A; }
+
+        .loading-overlay {
+            position: absolute; inset: 0; background: rgba(18, 18, 20, 0.60);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+            z-index: 900; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 12px; pointer-events: none;
+        }
+        .spinner {
+            width: 32px; height: 32px; border: 3px solid rgba(255, 115, 0, 0.2);
+            border-top-color: #FF7300; border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: 0.4px; }
+
+        .vis-tooltip {
+            display: none !important;
+        }
+
+        .node-tooltip-card {
+            position: absolute;
+            display: none;
+            z-index: 500;
+            background: var(--card-glass);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 11px;
+            color: var(--text);
+            pointer-events: none;
+            max-width: 240px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.45);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+        .node-tooltip-header {
+            display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;
+        }
+        .node-tooltip-badge {
+            font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 6px;
+            border-radius: 4px; letter-spacing: 0.4px; white-space: nowrap;
+        }
+        .node-tooltip-title {
+            font-weight: 700; font-size: 12px; color: var(--text); word-break: break-word;
+        }
+        .node-tooltip-row {
+            display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--text-muted);
+        }
+        .node-tooltip-row b { color: var(--text); font-weight: 600; }
+
+        .drawer-tab-content, .search-results, #filter-popover, .path-body {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+        .drawer-tab-content::-webkit-scrollbar,
+        .search-results::-webkit-scrollbar,
+        #filter-popover::-webkit-scrollbar,
+        .path-body::-webkit-scrollbar {
+            width: 7px;
+        }
+        .drawer-tab-content::-webkit-scrollbar-track,
+        .search-results::-webkit-scrollbar-track,
+        #filter-popover::-webkit-scrollbar-track,
+        .path-body::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .drawer-tab-content::-webkit-scrollbar-thumb,
+        .search-results::-webkit-scrollbar-thumb,
+        #filter-popover::-webkit-scrollbar-thumb,
+        .path-body::-webkit-scrollbar-thumb {
+            background-color: var(--border);
+            border-radius: 10px;
+        }
+        .drawer-tab-content::-webkit-scrollbar-thumb:hover,
+        .search-results::-webkit-scrollbar-thumb:hover,
+        #filter-popover::-webkit-scrollbar-thumb:hover,
+        .path-body::-webkit-scrollbar-thumb:hover {
+            background-color: var(--text-muted);
+        }
+        #filter-popover {
+            max-height: 260px;
+            overflow-y: auto;
+        }
+
+        /* ===================== MENUS DE CONTEXTO FLOWSINT ===================== */
+        .flowsint-ctx-menu {
+            position: absolute; z-index: 1000; display: none;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 8px; padding: 4px; min-width: 200px; max-width: 320px;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            color: var(--text); font-size: 11px; user-select: none;
+        }
+        .ctx-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); gap: 6px;
+        }
+        .ctx-header-info { display: flex; align-items: center; gap: 6px; overflow: hidden; flex: 1; }
+        .ctx-title {
+            font-weight: 700; font-size: 11px; color: var(--text);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .ctx-badge {
+            font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
+            border-radius: 4px; background: rgba(255,115,0,0.15); color: var(--primary);
+            border: 1px solid rgba(255,115,0,0.35); white-space: nowrap;
+        }
+        .ctx-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+        .ctx-icon-btn {
+            background: transparent; border: none; color: var(--text-muted);
+            width: 24px; height: 24px; border-radius: 4px; display: flex;
+            align-items: center; justify-content: center; cursor: pointer; transition: 0.12s;
+        }
+        .ctx-icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+        .ctx-flags-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; }
+        .ctx-subtitle { font-size: 10px; color: var(--text-muted); font-weight: 600; }
+        .flag-dot {
+            width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
+            border: 2px solid transparent; transition: transform 0.15s, border-color 0.15s;
+        }
+        .flag-dot:hover { transform: scale(1.15); border-color: #FFFFFF; }
+        .ctx-separator { height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0; }
+        .ctx-item {
+            display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; color: var(--text);
+            transition: background 0.12s, color 0.12s;
+        }
+        .ctx-item:hover { background: rgba(255,255,255,0.08); color: #FFFFFF; }
+        .ctx-item svg { flex-shrink: 0; }
+
+        .ctx-edge-bar { align-items: center; padding: 3px 6px; gap: 4px; min-width: 210px; }
+        .ctx-edge-input-wrap { flex: 1; }
+        .ctx-input {
+            width: 100%; background: rgba(18,18,20,0.95); border: 1px solid var(--border);
+            border-radius: 4px; color: var(--text); font-size: 11px; padding: 4px 8px; outline: none;
+        }
+        .ctx-input:focus { border-color: var(--primary); }
+
+        .custom-tooltip {
+            position: fixed; z-index: 2000; display: none;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 6px; padding: 5px 9px; font-size: 11px; font-weight: 600;
+            color: var(--text); white-space: nowrap; pointer-events: none;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body>
+    <div class="top-right-controls">
+        <button class="tr-btn active" id="btn-dock-filter" onclick="toggleFilterPopover()" data-tip="Filtrar Camadas">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+        <button class="tr-btn" id="btn-dock-theme" onclick="toggleTheme()" data-tip="Alternar Tema Claro/Escuro">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        <div class="toolbar-separator"></div>
+        <div style="position:relative;">
+            <button class="tr-btn" onclick="toggleExportMenu()" data-tip="Exportar Grafo">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+            <div id="export-menu" class="export-menu" style="display:none;">
+                <div class="export-item" onclick="exportPNG()">Exportar como PNG</div>
+                <div class="export-item" onclick="exportJSON()">Exportar como JSON</div>
+                <div class="export-item" onclick="exportHTML()">Exportar como HTML (Completo)</div>
+            </div>
+        </div>
+        <button class="tr-btn" onclick="resetarOuRecalcularLayout()" data-tip="Recalcular Layout">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+    </div>
+
+    <div id="filter-popover" class="search-panel" style="display:none; top:58px; right:14px; left:auto; width:220px;">
+        <div class="filter-popover-title">Filtros de Entidade</div>
+        <label class="filter-row"><input type="checkbox" id="flt-cpf" checked onchange="aplicarFiltroTipo()"> Titular (CPF)</label>
+        <label class="filter-row"><input type="checkbox" id="flt-telefone" checked onchange="aplicarFiltroTipo()"> Telefone</label>
+        <label class="filter-row"><input type="checkbox" id="flt-placa" checked onchange="aplicarFiltroTipo()"> Placa</label>
+        <label class="filter-row"><input type="checkbox" id="flt-prestador" checked onchange="aplicarFiltroTipo()"> Prestador</label>
+    </div>
+
+    <div class="left-rail">
+        <button class="rail-btn" onclick="limparSelecaoMultipla()" data-tip="Limpar Seleção">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </button>
+
+        <div class="rail-select-group">
+            <button class="rail-btn" id="rail-select-main" onclick="toggleModoSelecaoPrincipal()" data-tip="Selecionar (segure &quot;S&quot;)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51z"/></svg>
+            </button>
+            <button class="rail-chevron-btn" onclick="toggleSelecaoSubmenu(event)" data-tip="Escolher modo de seleção">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div id="selecao-submenu" class="selecao-submenu">
+                <div class="selecao-submenu-item active" data-mode="rectangle" onclick="definirSubmodoSelecao('rectangle')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"><rect x="3" y="3" width="18" height="18" rx="1"/></svg>
+                    Retângulo
+                </div>
+                <div class="selecao-submenu-item" data-mode="lasso" onclick="definirSubmodoSelecao('lasso')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 8c0-3 3-5 7-5s7 2 7 5-3 5-7 5c-2 0-3.5-.5-4.5-1.3C6.2 12.8 5 14.5 5 16.5 5 19 7 21 9.5 21c1.4 0 2.7-.6 3.5-1.6"/><circle cx="6" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
+                    Laço
+                </div>
+            </div>
+        </div>
+
+        <button class="rail-btn" onclick="executarFindPath()" data-tip="Find Path (2 nós selecionados)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v2"/></svg>
+            <span id="find-path-badge" class="rail-badge">2</span>
+        </button>
+        <button class="rail-btn" id="rail-search" onclick="toggleSearchPanel()" data-tip="Buscar Entidade">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <div class="rail-separator"></div>
+        <button class="rail-btn active" id="rail-organico" onclick="changeLayout('organico')" data-tip="Força Orgânica">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M12 9V5m0 14v-4m-3-3H5m14 0h-4"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-arvore" onclick="solicitarHierarchyLayout()" data-tip="Hierarquia (Tree)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="4" rx="1"/><rect x="4" y="17" width="6" height="4" rx="1"/><rect x="14" y="17" width="6" height="4" rx="1"/><path d="M12 7v5m-5 5v-2a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v2"/></svg>
+        </button>
+    </div>
+
+    <div id="selection-banner" class="selection-banner" style="display:none;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span id="selection-banner-text">Seleção retangular ativa</span>
+    </div>
+
+    <div id="neighborhood-banner" class="neighborhood-banner" style="display:none;">
+        <span>Vizinhança isolada: <b id="nb-focus-name"></b></span>
+        <button class="neighborhood-restore-btn" onclick="restaurarVisaoCompleta()">Restaurar</button>
+    </div>
+
+    <div id="path-finder-panel" class="path-panel" style="display:none;">
+        <div class="path-header">
+            <span style="font-size:12px; font-weight:700; color:var(--text);" id="path-header-count">Path (0 nodes)</span>
+            <button style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:14px;" onclick="fecharPathPanel()">&times;</button>
+        </div>
+        <div class="path-body" id="path-body-content"></div>
+    </div>
+
+    <div id="search-panel" class="search-panel" style="display:none;">
+        <div class="search-input-wrap">
+            <input type="text" id="search-input" placeholder="Buscar..." oninput="filtrarListaBusca(this.value)">
+            <button id="search-clear-btn" class="search-clear-btn" onclick="limparBuscaGrafo()">&times;</button>
+        </div>
+        <div id="search-results" class="search-results" style="display:none;"></div>
+    </div>
+
+    <div class="bottom-left-controls">
+        <button class="bl-btn" onclick="zoomIn()" data-tip="Zoom In">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="zoomOut()" data-tip="Zoom Out">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="fitView()" data-tip="Enquadrar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+    </div>
+
+    <div id="minimap-container" class="minimap-container">
+        <canvas id="minimap-canvas" width="160" height="120"></canvas>
+    </div>
+
+    <!-- MENU 1: CONTEXTO DO NÓ -->
+    <div id="ctx-node-menu" class="flowsint-ctx-menu">
+        <div class="ctx-header">
+            <div class="ctx-header-info">
+                <span id="ctx-node-label" class="ctx-title"></span>
+                <span id="ctx-node-type" class="ctx-badge"></span>
+            </div>
+            <div class="ctx-header-actions">
+                <button class="ctx-icon-btn" onclick="ctxCopiarDado()" data-tip="Copiar Identificador"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                <button class="ctx-icon-btn" onclick="ctxAbrirDrawer()" data-tip="Inspecionar Atributos"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+            </div>
+        </div>
+        <div class="ctx-flags-row">
+            <span class="ctx-subtitle">Flag:</span>
+            <div class="flag-dot" style="background:#EF4444;" onclick="ctxAplicarFlag('red')" data-tip="Vermelho"></div>
+            <div class="flag-dot" style="background:#F97316;" onclick="ctxAplicarFlag('orange')" data-tip="Laranja"></div>
+            <div class="flag-dot" style="background:#3B82F6;" onclick="ctxAplicarFlag('blue')" data-tip="Azul"></div>
+            <div class="flag-dot" style="background:#22C55E;" onclick="ctxAplicarFlag('green')" data-tip="Verde"></div>
+            <div class="flag-dot" style="background:#EAB308;" onclick="ctxAplicarFlag('yellow')" data-tip="Amarelo"></div>
+        </div>
+        <div class="ctx-separator"></div>
+        <div class="ctx-item" onclick="ctxCentralizar()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg> Focar no Canvas</div>
+        <div class="ctx-item" onclick="ctxIsolar()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Isolar Vizinhança (Destacar)</div>
+        <div class="ctx-item" onclick="ctxIsolarVizinhanca()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg> Isolar Vizinhança (Ocultar Demais)</div>
+        <div class="ctx-item" onclick="ctxEnrich()" style="color:var(--primary); font-weight:700;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Enriquecer Vínculos (Enrich)</div>
+    </div>
+
+    <!-- MENU 2: CONTEXTO DA ARESTA/LINHA -->
+    <div id="ctx-edge-menu" class="flowsint-ctx-menu ctx-edge-bar">
+        <div class="ctx-edge-input-wrap">
+            <input type="text" id="ctx-edge-input" class="ctx-input" placeholder="Vínculo relacional" readonly />
+        </div>
+        <div class="ctx-header-actions">
+            <button class="ctx-icon-btn" onclick="ctxCopiarRotuloEdge()" data-tip="Copiar Título do Vínculo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="ctx-icon-btn" onclick="ctxDestacarEdge()" data-tip="Destacar Apenas Este Vínculo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+    </div>
+
+    <!-- MENU 3: CONTEXTO DO CAMPO VAZIO / SELEÇÃO MÚLTIPLA -->
+    <div id="ctx-bg-menu" class="flowsint-ctx-menu" style="min-width: 220px;">
+        <div id="ctx-bg-empty-section">
+            <div class="ctx-item" onclick="ctxBuscarEntidade()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Buscar Entidade</div>
+            <div class="ctx-item" onclick="ctxRecalcularLayoutMenu()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Recalcular Layout</div>
+        </div>
+        <div id="ctx-bg-multi-section" style="display:none;">
+            <div class="ctx-header">
+                <span id="ctx-multi-count" class="ctx-title">0 selecionados</span>
+                <button class="ctx-icon-btn" onclick="ctxLimparSelecaoBg()" data-tip="Limpar Seleção"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></button>
+            </div>
+            <div class="ctx-separator"></div>
+            <div class="ctx-item" onclick="ctxCopiarLoteTexto()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copiar lista como texto</div>
+            <div class="ctx-item" onclick="ctxExportarLoteJson()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> Exportar seleção como JSON</div>
+        </div>
+    </div>
+
+    <div id="network"></div>
+    <div id="select-rect" class="select-rect"></div>
+    <svg id="lasso-svg" class="lasso-svg"><polygon id="lasso-poly" fill="rgba(255,115,0,0.12)" stroke="var(--canvas-accent)" stroke-width="1.5" stroke-dasharray="4 3" /></svg>
+    <div id="node-tooltip" class="node-tooltip-card"></div>
+
+    <div id="loading-overlay" class="loading-overlay" style="display:none;">
+        <div class="spinner"></div>
+        <div class="loading-text">Regenerating layout...</div>
+    </div>
+
+    <div id="modal-confirm-hierarchy" class="modal-backdrop" style="display:none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <span class="modal-title">Apply hierarchy layout?</span>
+                <button class="modal-close" onclick="fecharModalHierarchy()">&times;</button>
+            </div>
+            <div class="modal-body">
+                This will reset all node positions and regenerate them using the hierarchical layout algorithm. Current positions will be lost.
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn-cancel" onclick="fecharModalHierarchy()">Cancel</button>
+                <button class="modal-btn-continue" onclick="confirmarHierarchyLayout()">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="inspector-drawer" class="drawer">
+        <div id="drawer-resize-handle" class="drawer-resize-handle" title="Arraste para ajustar largura"></div>
+        <div class="drawer-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span id="drawer-badge" class="drawer-badge"></span>
+                <span id="drawer-title" style="font-weight:700; font-size:13px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+            </div>
+            <button class="drawer-close-btn" onclick="closeDrawer()">&times;</button>
+        </div>
+        <div class="drawer-tabs">
+            <div class="drawer-tab active" data-tab="details" onclick="switchDrawerTab('details')">Properties</div>
+            <div class="drawer-tab" data-tab="neighbors" onclick="switchDrawerTab('neighbors')">Neighbors</div>
+            <div class="drawer-tab" data-tab="relations" onclick="switchDrawerTab('relations')">Relations</div>
+        </div>
+        <div id="tab-details" class="drawer-tab-content active">
+            <button class="enrich-cta-btn" onclick="dispararEnrich()">Enriquecer Vínculos (Enrich)</button>
+            <div class="drawer-section" style="margin-top:12px;">
+                <div class="drawer-field"><span class="field-label">Identificador:</span><span id="drawer-val" class="field-value"></span></div>
+                <div id="drawer-row-nome" class="drawer-field" style="display:none;"><span class="field-label">Nome:</span><span id="drawer-nome" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Conexões:</span><span id="drawer-degree" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Intermediação:</span><span id="drawer-betweenness" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Comunidade:</span><span id="drawer-community" class="field-value"></span></div>
+            </div>
+        </div>
+        <div id="tab-neighbors" class="drawer-tab-content">
+            <div class="neighbors-preview-wrap"><canvas id="drawer-neighbors-preview" width="260" height="130"></canvas></div>
+            <div id="drawer-neighbors-list"></div>
+        </div>
+        <div id="tab-relations" class="drawer-tab-content">
+            <div id="drawer-relations-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+    </div>
+
+    <script>
+        function sendValueToStreamlit(value) {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value, dataType: "json" }, "*");
+        }
+        function setFrameHeightStreamlit(height) {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }, "*");
+        }
+        function notifyReadyStreamlit() {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+        }
+
+        let rawNodes = [], rawEdges = [], masterHubId = "", targetSearchId = "";
+        let initialLayout = "organico", currentLayoutMode = "organico", baseFontSize = 11, assinaturaDadosAtual = "";
+        let network = null;
+        const nodesDataSet = new vis.DataSet([]);
+        const edgesDataSet = new vis.DataSet([]);
+        let nodeIndexMap = new Map(), adjacencyMap = new Map(), adjacencySimples = new Map();
+        let contextMenuNodeId = null, contextMenuEdgeId = null, currentInspectedNodeId = null, currentHighlightId = null;
+        let selectedNodesQueue = [];
+        let selecaoMultiplaDeliberada = false;
+        let submodoSelecao = 'rectangle';
+        let modoSelecaoAtivo = false;
+        let modoLassoAtivo = false;
+        let isLodSimplified = false;
+        let temaAtualBg = '#121214';
+        let isAdaptive = true;
+        let hoveredNodeIdTooltip = null;
+        let tooltipConteudoAtualId = null;
+        let vizinhancaIsoladaAtiva = false;
+        let pathHighlightActive = false;
+        let edgeHighlightActive = false;
+        const container = document.getElementById('network');
+
+        const FLAG_CORES = { red: '#EF4444', orange: '#F97316', blue: '#3B82F6', green: '#22C55E', yellow: '#EAB308' };
+        const EDGE_COLOR_DIMMED = 'rgba(120, 120, 120, 0.28)';
+        let edgeOriginalStyleMap = new Map();
+
+        function desenharGridPontilhado(ctx) {
+            if (!network) return;
+            const scale = network.getScale();
+            if (!scale || scale < 0.22) return;
+
+            const canvasEl = container.querySelector('canvas');
+            if (!canvasEl) return;
+            const topLeft = network.DOMtoCanvas({ x: 0, y: 0 });
+            const bottomRight = network.DOMtoCanvas({ x: canvasEl.clientWidth, y: canvasEl.clientHeight });
+            const espacamentoGrid = 42;
+            if (((bottomRight.x - topLeft.x) / espacamentoGrid) * ((bottomRight.y - topLeft.y) / espacamentoGrid) > 6000) return;
+            const startX = Math.floor(topLeft.x / espacamentoGrid) * espacamentoGrid;
+            const startY = Math.floor(topLeft.y / espacamentoGrid) * espacamentoGrid;
+            ctx.save();
+            ctx.fillStyle = "rgba(184, 184, 184, 0.14)";
+            for (let x = startX; x <= bottomRight.x; x += espacamentoGrid) {
+                for (let y = startY; y <= bottomRight.y; y += espacamentoGrid) {
+                    ctx.beginPath();
+                    ctx.arc(x, y, 1.2, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+        }
+
+        function construirConteudoTooltip(nodeId) {
+            const nodeObj = nodeIndexMap.get(nodeId);
+            const tooltip = document.getElementById('node-tooltip');
+            if (!nodeObj || !tooltip) return;
+
+            const tipoLabel = (nodeObj.tipo || 'ENTIDADE').toUpperCase();
+            const valorLabel = nodeObj.valor || nodeObj.label || nodeObj.id;
+            const grau = nodeObj.degree !== undefined ? nodeObj.degree : ((adjacencySimples.get(nodeId) || []).length);
+            const corBase = nodeObj.color ? (nodeObj.color.border || nodeObj.color.background || nodeObj.color) : '#FF7300';
+
+            let linhaNome = '';
+            if (nodeObj.tipo === 'cpf' && nodeObj.nome_titular) {
+                linhaNome = `<div class="node-tooltip-row"><span>Nome:</span><b>${nodeObj.nome_titular}</b></div>`;
+            }
+
+            tooltip.innerHTML = `
+                <div class="node-tooltip-header">
+                    <span class="node-tooltip-badge" style="background:${corBase}26; color:${corBase}; border:1px solid ${corBase}55;">${tipoLabel}</span>
+                    <span class="node-tooltip-title">${valorLabel}</span>
+                </div>
+                ${linhaNome}
+                <div class="node-tooltip-row"><span>Conexões:</span><b>${grau}</b></div>
+            `;
+            tooltipConteudoAtualId = nodeId;
+        }
+
+        function posicionarTooltip(clientX, clientY) {
+            const tooltip = document.getElementById('node-tooltip');
+            if (!tooltip || tooltip.style.display !== 'block') return;
+            const rect = container.getBoundingClientRect();
+            let x = clientX - rect.left + 16;
+            let y = clientY - rect.top + 16;
+            const tw = tooltip.offsetWidth || 180;
+            const th = tooltip.offsetHeight || 50;
+            if (x + tw > rect.width - 8) x = clientX - rect.left - tw - 16;
+            if (y + th > rect.height - 8) y = clientY - rect.top - th - 16;
+            tooltip.style.left = Math.max(4, x) + 'px';
+            tooltip.style.top = Math.max(4, y) + 'px';
+        }
+
+        function mostrarTooltipNode(nodeId, clientX, clientY) {
+            if (tooltipConteudoAtualId !== nodeId) {
+                construirConteudoTooltip(nodeId);
+            }
+            const tooltip = document.getElementById('node-tooltip');
+            if (tooltip) tooltip.style.display = 'block';
+            posicionarTooltip(clientX, clientY);
+        }
+
+        function esconderTooltipNode() {
+            const tooltip = document.getElementById('node-tooltip');
+            if (tooltip) tooltip.style.display = 'none';
+            tooltipConteudoAtualId = null;
+        }
+
+        function updateAdaptiveLOD() {
+            if (!isAdaptive || !network) return;
+            const scale = network.getScale();
+            if (!scale || scale <= 0.002) return;
+
+            if (scale < 0.25) {
+                const screenTargetRadius = 5.5;
+                const dynamicDotSize = Math.max(12, Math.min(65, Math.round(screenTargetRadius / scale)));
+                const hubDotSize = Math.round(dynamicDotSize * 1.6);
+
+                isLodSimplified = true;
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const isHub = (n.id === masterHubId);
+                    updates.push({
+                        id: n.id,
+                        shape: "dot",
+                        size: isHub ? hubDotSize : dynamicDotSize,
+                        label: ""
+                    });
+                });
+                nodesDataSet.update(updates);
+                return;
+            } else if (scale >= 0.25 && isLodSimplified) {
+                isLodSimplified = false;
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const orig = nodeIndexMap.get(n.id);
+                    if (!orig) return;
+                    updates.push({
+                        id: n.id,
+                        shape: orig.shape || (orig.image ? "image" : "dot"),
+                        image: orig.image,
+                        size: orig.size || 20,
+                        label: orig.label
+                    });
+                });
+                nodesDataSet.update(updates);
+            }
+
+            if (!isLodSimplified) {
+                const targetSize = Math.max(9, Math.min(20, Math.round(baseFontSize / Math.sqrt(scale))));
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const orig = nodeIndexMap.get(n.id);
+                    updates.push({
+                        id: n.id,
+                        font: {
+                            size: targetSize,
+                            color: "#EDEDED",
+                            face: "Segoe UI",
+                            background: orig && orig.font ? orig.font.background : undefined,
+                            strokeWidth: 0
+                        }
+                    });
+                });
+                nodesDataSet.update(updates);
+            }
+        }
+
+        function desenharMinimapa() {
+            const canvas = document.getElementById('minimap-canvas');
+            if (!canvas || !network) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const positions = network.getPositions();
+            const ids = Object.keys(positions);
+            if (ids.length === 0) return;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            ids.forEach(id => {
+                const p = positions[id];
+                if (p) {
+                    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+                }
+            });
+
+            const k = network.getScale() || 1;
+            const canvasEl = container.querySelector('canvas');
+            const canvasWidth = canvasEl ? canvasEl.clientWidth : container.clientWidth;
+            const canvasHeight = canvasEl ? canvasEl.clientHeight : container.clientHeight;
+
+            const invScale = 1 / k;
+            const viewportWidth = canvasWidth * invScale;
+            const viewportHeight = canvasHeight * invScale;
+
+            let centerX = 0, centerY = 0;
+            try {
+                const vp = network.getViewPosition();
+                centerX = vp.x; centerY = vp.y;
+            } catch (e) {}
+
+            const viewportX1 = centerX - viewportWidth / 2;
+            const viewportY1 = centerY - viewportHeight / 2;
+            const viewportX2 = centerX + viewportWidth / 2;
+            const viewportY2 = centerY + viewportHeight / 2;
+
+            const worldMinX = Math.min(minX, viewportX1);
+            const worldMinY = Math.min(minY, viewportY1);
+            const worldMaxX = Math.max(maxX, viewportX2);
+            const worldMaxY = Math.max(maxY, viewportY2);
+
+            const worldWidth = worldMaxX - worldMinX || 1;
+            const worldHeight = worldMaxY - worldMinY || 1;
+
+            const width = canvas.width;
+            const height = canvas.height;
+            const scaleX = width / worldWidth;
+            const scaleY = height / worldHeight;
+            const scale = Math.min(scaleX, scaleY) * 0.9;
+
+            const offsetX = (width - worldWidth * scale) / 2;
+            const offsetY = (height - worldHeight * scale) / 2;
+
+            const project = (x, y) => [
+                (x - worldMinX) * scale + offsetX,
+                (y - worldMinY) * scale + offsetY
+            ];
+
+            ids.forEach(id => {
+                const p = positions[id];
+                if (!p) return;
+                const [cx, cy] = project(p.x, p.y);
+                const nodeObj = nodeIndexMap.get(id);
+                ctx.beginPath();
+                ctx.arc(cx, cy, (id === masterHubId ? 2.5 : 1.5), 0, 2 * Math.PI);
+                ctx.fillStyle = (id === masterHubId) ? "#FF7300" : (nodeObj && nodeObj.color ? (nodeObj.color.background || nodeObj.color) : "#8A8D99");
+                ctx.fill();
+            });
+
+            const [vx1, vy1] = project(viewportX1, viewportY1);
+            const [vx2, vy2] = project(viewportX2, viewportY2);
+            const rectWidth = Math.abs(vx2 - vx1);
+            const rectHeight = Math.abs(vy2 - vy1);
+            const rectX = Math.min(vx1, vx2);
+            const rectY = Math.min(vy1, vy2);
+
+            ctx.strokeStyle = 'rgba(255, 115, 0, 0.85)';
+            ctx.fillStyle = 'rgba(255, 115, 0, 0.12)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 2);
+            } else {
+                ctx.rect(rectX, rectY, rectWidth, rectHeight);
+            }
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        function toggleTheme() {
+            const atual = document.body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            document.body.setAttribute('data-theme', atual);
+            temaAtualBg = (atual === 'dark' ? '#121214' : '#FCFCFC');
+            document.getElementById('btn-dock-theme').classList.toggle('active', atual === 'light');
+            if (network) {
+                updateAdaptiveLOD();
+                network.redraw();
+            }
+        }
+
+        function reportarAlturaReal() {
+            let topOffset = 0;
+            try {
+                const rect = window.frameElement.getBoundingClientRect();
+                topOffset = rect.top;
+            } catch (e) {
+                topOffset = 0;
+            }
+            const margemInferior = 12;
+            const alturaJanelaPai = (window.parent && window.parent.innerHeight) ? window.parent.innerHeight : window.innerHeight;
+            const alturaDisponivel = Math.max(400, alturaJanelaPai - topOffset - margemInferior);
+            setFrameHeightStreamlit(alturaDisponivel);
+        }
+        window.addEventListener('resize', reportarAlturaReal);
+
+        function toggleFilterPopover() { 
+            const p = document.getElementById('filter-popover'); 
+            p.style.display = p.style.display === "none" ? "block" : "none"; 
+        }
+        function toggleSearchPanel() {
+            const p = document.getElementById('search-panel');
+            const v = p.style.display !== "none";
+            p.style.display = v ? "none" : "block";
+            document.getElementById('rail-search').classList.toggle('active', !v);
+        }
+        function toggleExportMenu() { const m = document.getElementById('export-menu'); m.style.display = m.style.display === "none" ? "flex" : "none"; }
+
+        function exportJSON() {
+            toggleExportMenu();
+            const alvo = selectedNodesQueue.length > 1
+                ? { nodes: rawNodes.filter(n => selectedNodesQueue.includes(n.id)), edges: rawEdges.filter(e => selectedNodesQueue.includes(e.from) && selectedNodesQueue.includes(e.to)) }
+                : { nodes: rawNodes, edges: rawEdges };
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(alvo, null, 2));
+            const a = document.createElement('a');
+            a.href = dataStr; a.download = `investigacao_${masterHubId || 'lcfo'}.json`; a.click();
+        }
+        function exportPNG() {
+            toggleExportMenu();
+            const canvas = container.querySelector('canvas');
+            const a = document.createElement('a');
+            a.download = `evidencia_${masterHubId || 'lcfo'}.png`; a.href = canvas.toDataURL('image/png'); a.click();
+        }
+
+        function exportHTML() {
+            toggleExportMenu();
+            const currentPositions = network ? network.getPositions() : {};
+            const nodesCopy = rawNodes.map(n => {
+                const p = currentPositions[n.id];
+                return p ? { ...n, x: Math.round(p.x), y: Math.round(p.y) } : { ...n };
+            });
+
+            const payload = {
+                nodes: nodesCopy,
+                edges: rawEdges,
+                hub_id: masterHubId,
+                layout_ativo: currentLayoutMode || "organico",
+                base_font_size: baseFontSize
+            };
+
+            let fullHtml = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+            fullHtml = fullHtml.replace(/<script id="standalone-data">[\s\S]*?<\/script>/gi, '');
+
+            const injectScript = `
+            <script id="standalone-data">
+            (function() {
+                const standalonePayload = ${JSON.stringify(payload)};
+                window.addEventListener('DOMContentLoaded', function() {
+                    setTimeout(function() {
+                        inicializarOuAtualizarRede(standalonePayload);
+                    }, 100);
+                });
+            })();
+            <\/script>`;
+
+            fullHtml = fullHtml.replace('</body>', injectScript + '\n</body>');
+
+            const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `dossie_forense_${masterHubId || 'lcfo'}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function resetarOuRecalcularLayout() {
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.style.display = 'flex';
+            sendValueToStreamlit({ tipo: "reset_layout_request", ts: Date.now() });
+            setTimeout(() => { if (overlay) overlay.style.display = 'none'; }, 600);
+        }
+        function zoomIn() { if (network) network.moveTo({ scale: network.getScale() * 1.25, animation: { duration: 250 } }); }
+        function zoomOut() { if (network) network.moveTo({ scale: network.getScale() * 0.8, animation: { duration: 250 } }); }
+        function fitView() { if (network) network.fit({ animation: { duration: 350 }, padding: 60 }); }
+
+        function aplicarFiltroTipo() {
+            const permitidos = new Set();
+            ['cpf', 'telefone', 'placa', 'prestador'].forEach(t => { if (document.getElementById('flt-' + t)?.checked) permitidos.add(t); });
+            const updates = [];
+            nodesDataSet.forEach(node => updates.push({ id: node.id, hidden: !permitidos.has(node.tipo) }));
+            nodesDataSet.update(updates);
+        }
+
+        function dispararEnrich() {
+            if (!currentInspectedNodeId) return;
+            const nodeObj = nodeIndexMap.get(currentInspectedNodeId);
+            if (!nodeObj) return;
+            sendValueToStreamlit({ tipo: "enrich_request", nodeId: currentInspectedNodeId, tipoEntidade: nodeObj.tipo, valor: nodeObj.valor });
+        }
+
+        function aplicarDestaqueArestasPorNos(nodeIdSet, corForcada) {
+            const updates = [];
+            edgeOriginalStyleMap.forEach((orig, edgeId) => {
+                const edgeAtual = edgesDataSet.get(edgeId);
+                if (!edgeAtual) return;
+
+                if (!nodeIdSet) {
+                    updates.push({
+                        id: edgeId,
+                        color: { ...orig.colorObj, opacity: orig.colorObj.opacity ?? 0.80 },
+                        width: orig.width
+                    });
+                    return;
+                }
+
+                const pertenceAoDestaque = nodeIdSet.has(edgeAtual.from) && nodeIdSet.has(edgeAtual.to);
+                if (pertenceAoDestaque) {
+                    updates.push({
+                        id: edgeId,
+                        color: corForcada
+                            ? { ...orig.colorObj, color: corForcada, opacity: 1.0 }
+                            : { ...orig.colorObj, opacity: 0.95 },
+                        width: Math.min(6, orig.width * 1.35)
+                    });
+                } else {
+                    updates.push({
+                        id: edgeId,
+                        color: { ...orig.colorObj, color: EDGE_COLOR_DIMMED, opacity: 0.45 },
+                        width: Math.max(0.4, orig.width / 5)
+                    });
+                }
+            });
+            if (updates.length > 0) edgesDataSet.update(updates);
+        }
+
+        function applyHighlight(selectedId) {
+            currentHighlightId = selectedId;
+            pathHighlightActive = false;
+            edgeHighlightActive = false;
+            if (!network) return;
+            if (selectedId && nodesDataSet.get(selectedId)) {
+                const connected = network.getConnectedNodes(selectedId); connected.push(selectedId);
+                const updates = [];
+                nodesDataSet.forEach(node => updates.push({ id: node.id, opacity: connected.includes(node.id) ? 1.0 : 0.12, borderWidth: (node.id === selectedId ? 3.5 : 1.2) }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(new Set(connected));
+            } else {
+                const updates = [];
+                nodesDataSet.forEach(node => updates.push({ id: node.id, opacity: 1.0, borderWidth: (node.id === masterHubId ? 3.5 : 1.2) }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(null);
+            }
+        }
+
+        function sincronizarSelecaoComPython() {
+            sendValueToStreamlit({ tipo: "sync_selection_from_canvas", ids: [...selectedNodesQueue], ts: Date.now() });
+        }
+
+        function limparSelecaoMultipla() {
+            selectedNodesQueue = [];
+            selecaoMultiplaDeliberada = false;
+            atualizarBadgeFindPath();
+            applyHighlight(null);
+            closeDrawer();
+            sincronizarSelecaoComPython();
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+                e.preventDefault();
+                selectedNodesQueue = [];
+                nodesDataSet.forEach(n => { if (!n.hidden) selectedNodesQueue.push(n.id); });
+                selecaoMultiplaDeliberada = selectedNodesQueue.length > 0;
+                atualizarBadgeFindPath();
+                const updates = selectedNodesQueue.map(id => ({ id, borderWidth: 3.5 }));
+                nodesDataSet.update(updates);
+                sincronizarSelecaoComPython();
+            }
+            if (e.key === 'Escape' && vizinhancaIsoladaAtiva) {
+                restaurarVisaoCompleta();
+            }
+        });
+
+        let selectHoldEstadoAnterior = null;
+        document.addEventListener('keydown', function(e) {
+            if (e.key.toLowerCase() !== 's' || e.repeat) return;
+            const ativoEl = document.activeElement;
+            const estaDigitando = ativoEl && (ativoEl.tagName === 'INPUT' || ativoEl.tagName === 'TEXTAREA' || ativoEl.isContentEditable);
+            if (estaDigitando || selectHoldEstadoAnterior !== null) return;
+            selectHoldEstadoAnterior = modoSelecaoAtivo || modoLassoAtivo;
+            if (!selectHoldEstadoAnterior) toggleModoSelecaoPrincipal();
+        });
+        document.addEventListener('keyup', function(e) {
+            if (e.key.toLowerCase() !== 's') return;
+            if (selectHoldEstadoAnterior === false) toggleModoSelecaoPrincipal();
+            selectHoldEstadoAnterior = null;
+        });
+
+        function atualizarVisualBotaoSelecaoPrincipal() {
+            const ativo = modoSelecaoAtivo || modoLassoAtivo;
+            const btn = document.getElementById('rail-select-main');
+            if (btn) btn.classList.toggle('active', ativo);
+        }
+
+        function toggleModoSelecaoPrincipal() {
+            if (submodoSelecao === 'lasso') toggleModoLasso();
+            else toggleModoSelecao();
+        }
+
+        function toggleSelecaoSubmenu(e) {
+            e.stopPropagation();
+            const m = document.getElementById('selecao-submenu');
+            const abrir = !m.style.display || m.style.display === 'none';
+            m.style.display = abrir ? 'flex' : 'none';
+        }
+
+        function definirSubmodoSelecao(modo) {
+            submodoSelecao = modo;
+            document.querySelectorAll('.selecao-submenu-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.mode === modo);
+            });
+            document.getElementById('selecao-submenu').style.display = 'none';
+
+            const estavaAtivo = modoSelecaoAtivo || modoLassoAtivo;
+            if (estavaAtivo) {
+                modoSelecaoAtivo = false;
+                modoLassoAtivo = false;
+                if (modo === 'rectangle') { modoSelecaoAtivo = true; } else { modoLassoAtivo = true; }
+                atualizarVisualBotaoSelecaoPrincipal();
+                document.getElementById('selection-banner-text').innerText = (modo === 'rectangle') ? 'Seleção retangular ativa' : 'Seleção por laço ativa';
+                document.getElementById('selection-banner').style.display = 'flex';
+                atualizarInteracaoModoSelecao();
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.rail-select-group')) {
+                const sm = document.getElementById('selecao-submenu');
+                if (sm) sm.style.display = 'none';
+            }
+        });
+
+        function atualizarInteracaoModoSelecao() {
+            const algumModoAtivo = modoSelecaoAtivo || modoLassoAtivo;
+            container.style.cursor = algumModoAtivo ? 'crosshair' : 'default';
+            if (network) {
+                network.setOptions({
+                    interaction: {
+                        dragView: !algumModoAtivo,
+                        dragNodes: !algumModoAtivo,
+                        zoomView: true,
+                        hover: true,
+                        tooltipDelay: 100
+                    }
+                });
+            }
+        }
+
+        function toggleModoSelecao() {
+            modoSelecaoAtivo = !modoSelecaoAtivo;
+            if (modoSelecaoAtivo) modoLassoAtivo = false;
+            atualizarVisualBotaoSelecaoPrincipal();
+            document.getElementById('selection-banner-text').innerText = 'Seleção retangular ativa';
+            document.getElementById('selection-banner').style.display = modoSelecaoAtivo ? 'flex' : 'none';
+            atualizarInteracaoModoSelecao();
+        }
+
+        function toggleModoLasso() {
+            modoLassoAtivo = !modoLassoAtivo;
+            if (modoLassoAtivo) modoSelecaoAtivo = false;
+            atualizarVisualBotaoSelecaoPrincipal();
+            document.getElementById('selection-banner-text').innerText = 'Seleção por laço ativa';
+            document.getElementById('selection-banner').style.display = modoLassoAtivo ? 'flex' : 'none';
+            atualizarInteracaoModoSelecao();
+        }
+
+        let selRectStart = null;
+        container.addEventListener('mousedown', function(e) {
+            if (!modoSelecaoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            selRectStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            const el = document.getElementById('select-rect');
+            el.style.display = 'block'; el.style.left = selRectStart.x + 'px'; el.style.top = selRectStart.y + 'px';
+            el.style.width = '0px'; el.style.height = '0px';
+        });
+        container.addEventListener('mousemove', function(e) {
+            if (!modoSelecaoAtivo || !selRectStart) return;
+            const rect = container.getBoundingClientRect();
+            const curX = e.clientX - rect.left, curY = e.clientY - rect.top;
+            const el = document.getElementById('select-rect');
+            el.style.left = Math.min(selRectStart.x, curX) + 'px';
+            el.style.top = Math.min(selRectStart.y, curY) + 'px';
+            el.style.width = Math.abs(curX - selRectStart.x) + 'px';
+            el.style.height = Math.abs(curY - selRectStart.y) + 'px';
+        });
+        container.addEventListener('mouseup', function(e) {
+            if (!modoSelecaoAtivo || !selRectStart) return;
+            const rect = container.getBoundingClientRect();
+            const curX = e.clientX - rect.left, curY = e.clientY - rect.top;
+            const x1 = Math.min(selRectStart.x, curX), x2 = Math.max(selRectStart.x, curX);
+            const y1 = Math.min(selRectStart.y, curY), y2 = Math.max(selRectStart.y, curY);
+            const positions = network.getPositions();
+            const encontrados = [];
+            Object.keys(positions).forEach(id => {
+                const dom = network.canvasToDOM(positions[id]);
+                if (dom.x >= x1 && dom.x <= x2 && dom.y >= y1 && dom.y <= y2) encontrados.push(id);
+            });
+            selectedNodesQueue = encontrados;
+            selecaoMultiplaDeliberada = encontrados.length > 0;
+            atualizarBadgeFindPath();
+            const updates = [];
+            nodesDataSet.forEach(n => updates.push({ id: n.id, borderWidth: encontrados.includes(n.id) ? 3.5 : 1.2 }));
+            nodesDataSet.update(updates);
+            document.getElementById('select-rect').style.display = 'none';
+            selRectStart = null;
+            sincronizarSelecaoComPython();
+        });
+
+        let lassoPontos = [];
+        let lassoAtivo = false;
+
+        function pontoDentroDoPoligono(px, py, pontos) {
+            let dentro = false;
+            for (let i = 0, j = pontos.length - 1; i < pontos.length; j = i++) {
+                const xi = pontos[i][0], yi = pontos[i][1];
+                const xj = pontos[j][0], yj = pontos[j][1];
+                const intersecta = ((yi > py) !== (yj > py)) &&
+                    (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+                if (intersecta) dentro = !dentro;
+            }
+            return dentro;
+        }
+
+        function atualizarPoligonoSvg() {
+            const poly = document.getElementById('lasso-poly');
+            poly.setAttribute('points', lassoPontos.map(p => p.join(',')).join(' '));
+        }
+
+        container.addEventListener('mousedown', function(e) {
+            if (!modoLassoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            lassoAtivo = true;
+            lassoPontos = [[e.clientX - rect.left, e.clientY - rect.top]];
+            const svg = document.getElementById('lasso-svg');
+            svg.style.display = 'block';
+            atualizarPoligonoSvg();
+        });
+        container.addEventListener('mousemove', function(e) {
+            if (!modoLassoAtivo || !lassoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            const px = e.clientX - rect.left, py = e.clientY - rect.top;
+            const ultimo = lassoPontos[lassoPontos.length - 1];
+            if (!ultimo || Math.hypot(px - ultimo[0], py - ultimo[1]) > 4) {
+                lassoPontos.push([px, py]);
+                atualizarPoligonoSvg();
+            }
+        });
+        container.addEventListener('mouseup', function(e) {
+            if (!modoLassoAtivo || !lassoAtivo) return;
+            lassoAtivo = false;
+            document.getElementById('lasso-svg').style.display = 'none';
+
+            if (lassoPontos.length >= 3) {
+                const positions = network.getPositions();
+                const encontrados = [];
+                Object.keys(positions).forEach(id => {
+                    const dom = network.canvasToDOM(positions[id]);
+                    if (pontoDentroDoPoligono(dom.x, dom.y, lassoPontos)) encontrados.push(id);
+                });
+                selectedNodesQueue = encontrados;
+                selecaoMultiplaDeliberada = encontrados.length > 0;
+                atualizarBadgeFindPath();
+                const updates = [];
+                nodesDataSet.forEach(n => updates.push({ id: n.id, borderWidth: encontrados.includes(n.id) ? 3.5 : 1.2 }));
+                nodesDataSet.update(updates);
+                sincronizarSelecaoComPython();
+            }
+            lassoPontos = [];
+        });
+
+        container.addEventListener('mousemove', function(e) {
+            if (hoveredNodeIdTooltip) {
+                mostrarTooltipNode(hoveredNodeIdTooltip, e.clientX, e.clientY);
+            }
+        });
+
+        function atualizarBadgeFindPath() {
+            const badge = document.getElementById('find-path-badge');
+            if (!badge) return;
+            badge.style.display = (selectedNodesQueue.length === 2) ? 'flex' : 'none';
+        }
+
+        function executarFindPath() {
+            if (selectedNodesQueue.length < 2) {
+                alert("Selecione 2 nós no grafo (ou marque 2 na lista de Entities) antes de traçar a rota.");
+                return;
+            }
+            const startNodeId = selectedNodesQueue[selectedNodesQueue.length - 2];
+            const endNodeId = selectedNodesQueue[selectedNodesQueue.length - 1];
+
+            const queue = [[startNodeId]];
+            const visited = new Set([startNodeId]);
+            let foundPath = null;
+
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const node = path[path.length - 1];
+                if (node === endNodeId) {
+                    foundPath = path;
+                    break;
+                }
+                (adjacencySimples.get(node) || []).forEach(nx => {
+                    if (!visited.has(nx)) {
+                        visited.add(nx);
+                        queue.push([...path, nx]);
+                    }
+                });
+            }
+
+            if (!foundPath) {
+                alert("Nenhum caminho relacional localizado entre os 2 nós.");
+                return;
+            }
+
+            const pathSet = new Set(foundPath);
+            pathHighlightActive = true;
+            currentHighlightId = null;
+            const updates = [];
+            nodesDataSet.forEach(node => updates.push({
+                id: node.id,
+                opacity: pathSet.has(node.id) ? 1.0 : 0.08,
+                borderWidth: pathSet.has(node.id) ? 3.5 : 1.0
+            }));
+            nodesDataSet.update(updates);
+            aplicarDestaqueArestasPorNos(pathSet, '#FF7300');
+
+            const panel = document.getElementById('path-finder-panel');
+            const headerCount = document.getElementById('path-header-count');
+            const bodyContent = document.getElementById('path-body-content');
+
+            headerCount.innerText = `Path (${foundPath.length} nodes)`;
+            bodyContent.innerHTML = "";
+
+            foundPath.forEach((nid, idx) => {
+                const nObj = nodeIndexMap.get(nid);
+                const cor = nObj && nObj.color ? (nObj.color.background || nObj.color) : '#FF7300';
+
+                const btn = document.createElement('button');
+                btn.className = 'path-node-btn';
+                btn.onclick = () => network.focus(nid, { scale: 1.2, animation: { duration: 350 } });
+                btn.innerHTML = `
+                    <div style="width:8px; height:8px; border-radius:50%; background:${cor}; shrink:0;"></div>
+                    <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">
+                        <span style="font-weight:600;">${nObj ? nObj.label : nid}</span>
+                        <span style="font-size:9px; color:var(--text-muted); margin-left:4px;">(${nObj ? nObj.tipo : ''})</span>
+                    </div>
+                `;
+                bodyContent.appendChild(btn);
+
+                if (idx < foundPath.length - 1) {
+                    const nextId = foundPath[idx + 1];
+                    const edgeObj = rawEdges.find(e => (e.from === nid && e.to === nextId) || (e.from === nextId && e.to === nid));
+                    const edgeLabel = edgeObj ? (edgeObj.label || edgeObj.title || 'Vínculo') : 'Vínculo';
+
+                    const line = document.createElement('div');
+                    line.className = 'path-edge-line';
+                    line.innerHTML = `<span style="border-left:1px solid var(--border); height:12px; margin-right:4px;"></span> &darr; ${edgeLabel}`;
+                    bodyContent.appendChild(line);
+                }
+            });
+
+            panel.style.display = 'flex';
+            network.fit({ nodes: foundPath, animation: { duration: 350 }, padding: 80 });
+        }
+
+        function fecharPathPanel() {
+            document.getElementById('path-finder-panel').style.display = 'none';
+            pathHighlightActive = false;
+            selectedNodesQueue = [];
+            selecaoMultiplaDeliberada = false;
+            atualizarBadgeFindPath();
+            applyHighlight(null);
+            sincronizarSelecaoComPython();
+        }
+
+        function filtrarListaBusca(termo) {
+            const resultsEl = document.getElementById('search-results'), clearBtn = document.getElementById('search-clear-btn');
+            if (!termo || termo.trim().length < 2) { resultsEl.style.display = "none"; resultsEl.innerHTML = ""; clearBtn.style.display = "none"; return; }
+            clearBtn.style.display = "block";
+            const termoClean = termo.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+            const encontrados = rawNodes.filter(n => {
+                const vClean = (n.valor || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                const lClean = (n.label || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                return vClean.includes(termoClean) || lClean.includes(termoClean);
+            }).slice(0, 25);
+            resultsEl.innerHTML = encontrados.length === 0
+                ? "<div style='color:var(--text-muted); font-size:11px; padding:4px;'>Nenhum registro localizado.</div>"
+                : "";
+            encontrados.forEach(n => {
+                const item = document.createElement('div');
+                item.className = 'search-result-item'; item.innerText = n.label;
+                item.onclick = function() { selectInspectedNode(n.id); };
+                resultsEl.appendChild(item);
+            });
+            resultsEl.style.display = "flex";
+        }
+        function limparBuscaGrafo() { document.getElementById('search-input').value = ""; filtrarListaBusca(""); }
+
+        function ocultarTodosMenusContexto() {
+            ['ctx-node-menu', 'ctx-edge-menu', 'ctx-bg-menu'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+        }
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.flowsint-ctx-menu')) ocultarTodosMenusContexto();
+        });
+
+        function calcularPosicaoSeguraMenu(el, domX, domY, displayMode) {
+            el.style.display = displayMode || 'block';
+            const menuWidth = el.offsetWidth || 210;
+            const menuHeight = el.offsetHeight || 160;
+            const bounds = container.getBoundingClientRect();
+            let posX = domX + 6;
+            let posY = domY + 6;
+            if (posX + menuWidth > bounds.width - 10) posX = domX - menuWidth - 6;
+            if (posY + menuHeight > bounds.height - 10) posY = domY - menuHeight - 6;
+            el.style.left = Math.max(8, posX) + 'px';
+            el.style.top = Math.max(8, posY) + 'px';
+        }
+
+        function handleContextMenu(params) {
+            params.event.preventDefault();
+            ocultarTodosMenusContexto();
+            const domX = params.pointer.DOM.x;
+            const domY = params.pointer.DOM.y;
+
+            const clickedNodeId = network.getNodeAt(params.pointer.DOM);
+            const clickedEdgeId = !clickedNodeId ? network.getEdgeAt(params.pointer.DOM) : null;
+
+            if (clickedNodeId) {
+                contextMenuNodeId = clickedNodeId;
+                contextMenuEdgeId = null;
+                const nodeObj = nodeIndexMap.get(clickedNodeId);
+                document.getElementById('ctx-node-label').innerText = nodeObj?.label || clickedNodeId;
+                const badgeEl = document.getElementById('ctx-node-type');
+                badgeEl.innerText = (nodeObj?.tipo || 'Entidade').toUpperCase();
+                const corBadge = nodeObj?.color ? (nodeObj.color.border || nodeObj.color.background || nodeObj.color) : '#FF7300';
+                badgeEl.style.background = corBadge + '26';
+                badgeEl.style.color = corBadge;
+                badgeEl.style.border = '1px solid ' + corBadge + '55';
+                calcularPosicaoSeguraMenu(document.getElementById('ctx-node-menu'), domX, domY, 'block');
+                return;
+            }
+
+            if (clickedEdgeId) {
+                contextMenuEdgeId = clickedEdgeId;
+                contextMenuNodeId = null;
+                const edgeObj = rawEdges.find(e => e.id === clickedEdgeId);
+                const rotulo = (edgeObj?.title || edgeObj?.label || 'Vínculo relacional').replace('Vínculo relacional: ', '');
+                document.getElementById('ctx-edge-input').value = rotulo;
+                calcularPosicaoSeguraMenu(document.getElementById('ctx-edge-menu'), domX, domY, 'flex');
+                return;
+            }
+
+            contextMenuNodeId = null;
+            contextMenuEdgeId = null;
+            const temSelecao = selecaoMultiplaDeliberada && selectedNodesQueue && selectedNodesQueue.length > 0;
+            document.getElementById('ctx-bg-empty-section').style.display = temSelecao ? 'none' : 'block';
+            document.getElementById('ctx-bg-multi-section').style.display = temSelecao ? 'block' : 'none';
+            if (temSelecao) {
+                document.getElementById('ctx-multi-count').innerText = `${selectedNodesQueue.length} selecionado(s)`;
+            }
+            calcularPosicaoSeguraMenu(document.getElementById('ctx-bg-menu'), domX, domY, 'block');
+        }
+
+        function ctxCopiarDado() { if (!contextMenuNodeId) return; const n = nodeIndexMap.get(contextMenuNodeId); if (n) navigator.clipboard.writeText(n.valor || n.id); ocultarTodosMenusContexto(); }
+        function ctxCentralizar() { if (contextMenuNodeId) network.focus(contextMenuNodeId, { scale: 1.15, animation: { duration: 350 } }); ocultarTodosMenusContexto(); }
+        function ctxIsolar() { if (contextMenuNodeId) applyHighlight(contextMenuNodeId); ocultarTodosMenusContexto(); }
+        function ctxAbrirDrawer() { if (contextMenuNodeId) { openInspector(contextMenuNodeId); applyHighlight(contextMenuNodeId); } ocultarTodosMenusContexto(); }
+        function ctxEnrich() { if (contextMenuNodeId) { currentInspectedNodeId = contextMenuNodeId; dispararEnrich(); } ocultarTodosMenusContexto(); }
+        function ctxAplicarFlag(cor) {
+            if (!contextMenuNodeId) return;
+            const nodeObj = nodeIndexMap.get(contextMenuNodeId);
+            if (!nodeObj) return;
+            const novaCor = nodeObj.flag === cor ? null : cor;
+            nodeObj.flag = novaCor;
+            const bordaCor = novaCor ? (FLAG_CORES[novaCor] || '#FF7300') : (contextMenuNodeId === masterHubId ? '#FF7300' : undefined);
+            const updatePayload = { id: contextMenuNodeId, borderWidth: novaCor ? 4 : (contextMenuNodeId === masterHubId ? 3.5 : 1.2) };
+            if (bordaCor) updatePayload.color = { ...(nodeObj.color || {}), border: bordaCor };
+            nodesDataSet.update(updatePayload);
+            ocultarTodosMenusContexto();
+        }
+
+        function ctxIsolarVizinhanca() {
+            if (!contextMenuNodeId || !network) return;
+            const focusId = contextMenuNodeId;
+            ocultarTodosMenusContexto();
+
+            const connected = network.getConnectedNodes(focusId);
+            const vizinhosSet = new Set(connected);
+            vizinhosSet.add(focusId);
+
+            const updates = [];
+            nodesDataSet.forEach(node => {
+                updates.push({ id: node.id, hidden: !vizinhosSet.has(node.id) });
+            });
+            nodesDataSet.update(updates);
+
+            vizinhancaIsoladaAtiva = true;
+            const banner = document.getElementById('neighborhood-banner');
+            const nObj = nodeIndexMap.get(focusId);
+            document.getElementById('nb-focus-name').innerText = `${nObj ? nObj.label : focusId} (${vizinhosSet.size} nós)`;
+            banner.style.display = 'flex';
+
+            network.fit({ nodes: Array.from(vizinhosSet), animation: { duration: 350 }, padding: 60 });
+        }
+
+        function restaurarVisaoCompleta() {
+            const todosIds = nodesDataSet.getIds();
+            const updates = todosIds.map(id => ({ id, hidden: false }));
+            nodesDataSet.update(updates);
+
+            vizinhancaIsoladaAtiva = false;
+            document.getElementById('neighborhood-banner').style.display = 'none';
+            fitView();
+        }
+
+        function ctxCopiarRotuloEdge() {
+            const inputEl = document.getElementById('ctx-edge-input');
+            if (inputEl.value) navigator.clipboard.writeText(inputEl.value);
+            ocultarTodosMenusContexto();
+        }
+        function ctxDestacarEdge() {
+            if (!contextMenuEdgeId) return;
+            const edgeObj = edgesDataSet.get(contextMenuEdgeId);
+            ocultarTodosMenusContexto();
+            if (!edgeObj) return;
+            edgeHighlightActive = true;
+            currentHighlightId = null;
+            const nodesSet = new Set([edgeObj.from, edgeObj.to]);
+            const updates = [];
+            nodesDataSet.forEach(node => updates.push({
+                id: node.id,
+                opacity: nodesSet.has(node.id) ? 1.0 : 0.10,
+                borderWidth: nodesSet.has(node.id) ? 3.5 : 1.0
+            }));
+            nodesDataSet.update(updates);
+            aplicarDestaqueArestasPorNos(nodesSet, '#FF7300');
+            network.fit({ nodes: Array.from(nodesSet), animation: { duration: 300 }, padding: 100 });
+        }
+
+        function ctxBuscarEntidade() {
+            ocultarTodosMenusContexto();
+            const p = document.getElementById('search-panel');
+            p.style.display = 'block';
+            document.getElementById('rail-search').classList.add('active');
+            setTimeout(() => document.getElementById('search-input').focus(), 30);
+        }
+        function ctxRecalcularLayoutMenu() { ocultarTodosMenusContexto(); resetarOuRecalcularLayout(); }
+        function ctxLimparSelecaoBg() { ocultarTodosMenusContexto(); limparSelecaoMultipla(); }
+        function ctxCopiarLoteTexto() {
+            if (!selectedNodesQueue || selectedNodesQueue.length === 0) { ocultarTodosMenusContexto(); return; }
+            const texto = selectedNodesQueue.map(id => nodeIndexMap.get(id)?.label || id).join('\n');
+            navigator.clipboard.writeText(texto);
+            ocultarTodosMenusContexto();
+        }
+        function ctxExportarLoteJson() { ocultarTodosMenusContexto(); exportJSON(); }
+
+        function switchDrawerTab(tab) {
+            document.querySelectorAll('.drawer-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+            document.querySelectorAll('.drawer-tab-content').forEach(el => el.classList.toggle('active', el.id === 'tab-' + tab));
+        }
+
+        function desenharNeighborsPreview(nodeId, connectedIds) {
+            const canvas = document.getElementById('drawer-neighbors-preview'); if (!canvas) return;
+            const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!connectedIds || connectedIds.length === 0) return;
+            const cx = canvas.width / 2, cy = canvas.height / 2;
+            const exibicaoIds = connectedIds.slice(0, 36);
+            const raio = Math.min(50, 24 + exibicaoIds.length * 1.1);
+            const posicoes = [];
+            ctx.strokeStyle = "rgba(184,184,184,0.3)"; ctx.lineWidth = 1;
+            exibicaoIds.forEach((id, i) => {
+                const ang = (2 * Math.PI * i) / exibicaoIds.length;
+                const px = cx + raio * Math.cos(ang), py = cy + raio * Math.sin(ang);
+                posicoes.push([px, py]);
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.stroke();
+            });
+            exibicaoIds.forEach((id, i) => {
+                const nObj = nodeIndexMap.get(id); const [px, py] = posicoes[i];
+                ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 2 * Math.PI);
+                ctx.fillStyle = nObj && nObj.color ? nObj.color.background : "#FF7300"; ctx.fill();
+            });
+            const centerObj = nodeIndexMap.get(nodeId);
+            ctx.beginPath(); ctx.arc(cx, cy, 7.5, 0, 2 * Math.PI);
+            ctx.fillStyle = centerObj && centerObj.color ? centerObj.color.background : "#FF7300"; ctx.fill();
+            ctx.strokeStyle = "#FF7300"; ctx.lineWidth = 1.8; ctx.stroke();
+        }
+
+        function openInspector(nodeId) {
+            const nodeObj = nodeIndexMap.get(nodeId); if (!nodeObj) return;
+            currentInspectedNodeId = nodeId;
+            const drawer = document.getElementById('inspector-drawer');
+            const badge = document.getElementById('drawer-badge'), rowNome = document.getElementById('drawer-row-nome');
+            badge.innerText = (nodeObj.tipo || "ENTIDADE").toUpperCase();
+            badge.style.background = nodeObj.color ? nodeObj.color.background : "#3C6FA8";
+            badge.style.color = "#FFFFFF";
+            document.getElementById('drawer-title').innerText = nodeObj.label;
+            document.getElementById('drawer-val').innerText = nodeObj.valor || nodeObj.id;
+            document.getElementById('drawer-degree').innerText = `${nodeObj.degree || 1} conexão(ões)`;
+            document.getElementById('drawer-betweenness').innerText = nodeObj.betweenness !== undefined ? `${nodeObj.betweenness}` : '0.0';
+            document.getElementById('drawer-community').innerText = nodeObj.community !== undefined ? `Grupo #${nodeObj.community}` : 'Principal';
+            if (nodeObj.tipo === "cpf" && nodeObj.nome_titular) { rowNome.style.display = "flex"; document.getElementById('drawer-nome').innerText = nodeObj.nome_titular; }
+            else { rowNome.style.display = "none"; }
+            switchDrawerTab('details');
+
+            const vizinhos = adjacencyMap.get(nodeId) || [];
+            desenharNeighborsPreview(nodeId, vizinhos.map(v => v.id));
+            const listEl = document.getElementById('drawer-neighbors-list'); listEl.innerHTML = "";
+            vizinhos.slice(0, 35).forEach(nb => {
+                const nbObj = nodeIndexMap.get(nb.id); if (!nbObj) return;
+                const item = document.createElement('div');
+                item.className = 'neighbor-item';
+                item.onclick = function() { selectInspectedNode(nb.id); };
+                item.innerHTML = `<span>${nbObj.label}</span><span style="color:var(--primary); font-size:9px;">${nb.title}</span>`;
+                listEl.appendChild(item);
+            });
+
+            const relListEl = document.getElementById('drawer-relations-list');
+            if (relListEl) {
+                relListEl.innerHTML = "";
+                const arestasDoNo = rawEdges.filter(e => e.from === nodeId || e.to === nodeId);
+
+                if (arestasDoNo.length === 0) {
+                    relListEl.innerHTML = "<div style='color:var(--text-muted); font-size:11px; padding:6px;'>Nenhum vínculo catalogado.</div>";
+                } else {
+                    arestasDoNo.forEach(edge => {
+                        const sourceNode = nodeIndexMap.get(edge.from);
+                        const targetNode = nodeIndexMap.get(edge.to);
+                        if (!sourceNode || !targetNode) return;
+
+                        const labelAresta = edge.title ? edge.title.replace('Vínculo relacional: ', '') : (edge.label || 'RELATED_TO');
+                        const sColor = sourceNode.color ? (sourceNode.color.border || sourceNode.color.background || sourceNode.color) : "#3C6FA8";
+                        const tColor = targetNode.color ? (targetNode.color.border || targetNode.color.background || targetNode.color) : "#6BA57D";
+
+                        const row = document.createElement('div');
+                        row.style.display = 'flex';
+                        row.style.alignItems = 'center';
+                        row.style.justifyContent = 'space-between';
+                        row.style.background = 'rgba(255, 255, 255, 0.02)';
+                        row.style.border = '1px solid var(--border)';
+                        row.style.borderRadius = '6px';
+                        row.style.padding = '8px 10px';
+                        row.style.fontSize = '11px';
+
+                        row.innerHTML = `
+                            <span style="background:${sColor}26; color:${sColor}; border:1px solid ${sColor}55; padding:3px 8px; border-radius:4px; font-weight:700; max-width:105px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                ${sourceNode.label}
+                            </span>
+                            <span style="color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:0.5px; padding:0 6px;">
+                                &rarr; &nbsp; ${labelAresta} &nbsp; &rarr;
+                            </span>
+                            <span style="background:${tColor}26; color:${tColor}; border:1px solid ${tColor}55; padding:3px 8px; border-radius:4px; font-weight:700; max-width:105px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                ${targetNode.label}
+                            </span>
+                        `;
+                        relListEl.appendChild(row);
+                    });
+                }
+            }
+
+            drawer.classList.add('open');
+        }
+        function closeDrawer() { document.getElementById('inspector-drawer').classList.remove('open'); currentInspectedNodeId = null; }
+        function selectInspectedNode(nodeId) { openInspector(nodeId); applyHighlight(nodeId); if (network) network.focus(nodeId, { scale: 1.15, animation: { duration: 400 } }); }
+
+        (function initDrawerResize() {
+            const handleH = document.getElementById('drawer-resize-handle');
+            const drawer = document.getElementById('inspector-drawer');
+            let resizing = false;
+            handleH.addEventListener('mousedown', function(e) { resizing = true; document.body.style.userSelect = 'none'; e.preventDefault(); });
+            document.addEventListener('mousemove', function(e) { if (resizing) drawer.style.width = Math.min(640, Math.max(300, window.innerWidth - e.clientX)) + "px"; });
+            document.addEventListener('mouseup', function() { resizing = false; document.body.style.userSelect = ''; });
+        })();
+
+        function marcarLayoutAtivo(mode) {
+            currentLayoutMode = mode;
+            ['organico', 'arvore'].forEach(m => { const el = document.getElementById(`rail-${m}`); if (el) el.classList.toggle('active', m === mode); });
+        }
+
+        function aplicarCurvaturaECoresArestas(edges) {
+            const grupos = new Map();
+            edges.forEach(e => {
+                const chave = [e.from, e.to].sort().join('__');
+                if (!grupos.has(chave)) grupos.set(chave, []);
+                grupos.get(chave).push(e);
+            });
+
+            grupos.forEach(grupo => {
+                const total = grupo.length;
+                grupo.forEach((e, i) => {
+                    if (total <= 1) {
+                        e.smooth = false;
+                    } else {
+                        const roundness = (i - (total - 1) / 2) * 0.22;
+                        e.smooth = {
+                            enabled: true,
+                            type: 'curvedCW',
+                            roundness: Math.abs(roundness) < 0.001 ? 0 : roundness
+                        };
+                    }
+
+                    const targetNode = nodeIndexMap.get(e.to);
+                    const sourceNode = nodeIndexMap.get(e.from);
+                    let corAresta = "rgba(140, 140, 140, 0.45)";
+
+                    if (targetNode && targetNode.color) {
+                        corAresta = (targetNode.color.border || targetNode.color.background || targetNode.color) + "99";
+                    } else if (sourceNode && sourceNode.color) {
+                        corAresta = (sourceNode.color.border || sourceNode.color.background || sourceNode.color) + "99";
+                    }
+
+                    e.color = {
+                        color: corAresta,
+                        highlight: '#FF7300',
+                        hover: '#FF7300',
+                        inherit: false,
+                        opacity: 0.80
+                    };
+
+                    e.arrows = {
+                        to: {
+                            enabled: true,
+                            scaleFactor: 0.42,
+                            type: 'arrow'
+                        }
+                    };
+                });
+            });
+        }
+
+        function solicitarHierarchyLayout() {
+            document.getElementById('modal-confirm-hierarchy').style.display = 'flex';
+        }
+
+        function fecharModalHierarchy() {
+            document.getElementById('modal-confirm-hierarchy').style.display = 'none';
+        }
+
+        function confirmarHierarchyLayout() {
+            fecharModalHierarchy();
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.style.display = 'flex';
+
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    changeLayout('arvore', true);
+                    if (overlay) overlay.style.display = 'none';
+                }, 50);
+            });
+        }
+
+        function changeLayout(mode, forcarRegenerar = true) {
+            marcarLayoutAtivo(mode);
+            if (!network) return;
+
+            network.setOptions({ physics: { enabled: false } });
+
+            if (mode === "organico") {
+                const updates = rawNodes.filter(n => n.x !== undefined && n.y !== undefined).map(n => ({
+                    id: n.id,
+                    x: n.x,
+                    y: n.y
+                }));
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); updateAdaptiveLOD(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 40);
+
+                sendValueToStreamlit({
+                    tipo: "save_layout_positions",
+                    layout: "organico",
+                    ts: Date.now()
+                });
+            } else if (mode === "arvore") {
+                if (!forcarRegenerar) {
+                    const updates = rawNodes.filter(n => n.x !== undefined && n.y !== undefined).map(n => ({
+                        id: n.id,
+                        x: n.x,
+                        y: n.y
+                    }));
+                    nodesDataSet.update(updates);
+                    setTimeout(() => { fitView(); updateAdaptiveLOD(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 40);
+                    return;
+                }
+
+                const levels = new Map();
+                const queue = [{ id: masterHubId || rawNodes[0]?.id, lvl: 0 }];
+                levels.set(queue[0].id, 0);
+
+                while (queue.length > 0) {
+                    const curr = queue.shift();
+                    (adjacencySimples.get(curr.id) || []).forEach(nbr => {
+                        if (!levels.has(nbr)) {
+                            levels.set(nbr, curr.lvl + 1);
+                            queue.push({ id: nbr, lvl: curr.lvl + 1 });
+                        }
+                    });
+                }
+
+                const levelGroups = new Map();
+                rawNodes.forEach(n => {
+                    const l = levels.get(n.id) ?? 1;
+                    if (!levelGroups.has(l)) levelGroups.set(l, []);
+                    levelGroups.get(l).push(n.id);
+                });
+
+                const updates = [];
+                const positionsMap = {};
+                let currentY = -180;
+                const maxLevel = Math.max(...Array.from(levelGroups.keys()), 0);
+
+                for (let lvl = 0; lvl <= maxLevel; lvl++) {
+                    const nodeIds = levelGroups.get(lvl) || [];
+                    if (nodeIds.length === 0) continue;
+
+                    if (lvl === 0) {
+                        nodeIds.forEach(id => {
+                            updates.push({ id, x: 0, y: currentY });
+                            positionsMap[id] = { x: 0, y: currentY };
+                        });
+                        currentY += 160;
+                    } else {
+                        const count = nodeIds.length;
+                        const cols = count <= 12 ? count : Math.min(22, Math.max(8, Math.ceil(Math.sqrt(count * 1.4))));
+                        const rows = Math.ceil(count / cols);
+                        const colSpacing = 160;
+                        const rowSpacing = 80;
+
+                        for (let r = 0; r < rows; r++) {
+                            const rowNodes = nodeIds.slice(r * cols, (r + 1) * cols);
+                            const rowWidth = (rowNodes.length - 1) * colSpacing;
+                            const startX = -rowWidth / 2;
+
+                            rowNodes.forEach((id, c) => {
+                                const px = Math.round(startX + c * colSpacing);
+                                const py = Math.round(currentY + r * rowSpacing);
+                                updates.push({ id, x: px, y: py });
+                                positionsMap[id] = { x: px, y: py };
+                            });
+                        }
+                        currentY += (rows * rowSpacing) + 140;
+                    }
+                }
+
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); updateAdaptiveLOD(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 40);
+
+                sendValueToStreamlit({
+                    tipo: "save_layout_positions",
+                    layout: "arvore",
+                    positions: positionsMap,
+                    ts: Date.now()
+                });
+            }
+        }
+
+        function posicionarNosOrbitalmente(novosNos) {
+            const semPosicao = novosNos.filter(n => n.x === undefined || n.y === undefined);
+            if (semPosicao.length === 0) return;
+            const grupos = new Map();
+            semPosicao.forEach(n => {
+                const pai = n.orbit_ao_redor || masterHubId;
+                if (!grupos.has(pai)) grupos.set(pai, []);
+                grupos.get(pai).push(n);
+            });
+            grupos.forEach((grupo, paiId) => {
+                let posPai = { x: 0, y: 0 };
+                if (network) { const pe = network.getPositions([paiId]); if (pe[paiId]) posPai = pe[paiId]; }
+                const raio = Math.max(130, grupo.length * 22);
+                grupo.forEach((n, i) => {
+                    const angle = (2 * Math.PI * i) / Math.max(grupo.length, 1);
+                    n.x = Math.round(posPai.x + raio * Math.cos(angle));
+                    n.y = Math.round(posPai.y + raio * Math.sin(angle));
+                });
+            });
+        }
+
+        function aplicarSelecaoExterna(ids) {
+            if (!Array.isArray(ids)) return;
+            selectedNodesQueue = ids.filter(id => nodeIndexMap.has(id)).slice(-6);
+            selecaoMultiplaDeliberada = selectedNodesQueue.length > 0;
+            atualizarBadgeFindPath();
+            const idsSet = new Set(selectedNodesQueue);
+            const updates = [];
+            nodesDataSet.forEach(n => updates.push({
+                id: n.id,
+                borderWidth: idsSet.has(n.id) ? 3.5 : (n.id === masterHubId ? 3.5 : 1.2)
+            }));
+            nodesDataSet.update(updates);
+        }
+
+        function criarNetwork() {
+            network = new vis.Network(container, { nodes: nodesDataSet, edges: edgesDataSet }, {
+                physics: { enabled: false },
+                interaction: { hover: true, zoomView: true, dragNodes: true, tooltipDelay: 100 }
+            });
+
+            network.on("beforeDrawing", desenharGridPontilhado);
+            network.on("afterDrawing", desenharMinimapa);
+            network.on("zoom", function() {
+                updateAdaptiveLOD();
+                desenharMinimapa();
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+            });
+            network.on("animationFinished", function() {
+                updateAdaptiveLOD();
+                desenharMinimapa();
+            });
+            network.on("dragEnd", function(params) {
+                desenharMinimapa();
+                if (currentLayoutMode === "arvore" && params && params.nodes && params.nodes.length > 0) {
+                    const positionsAtuais = network.getPositions(params.nodes);
+                    const positionsMap = {};
+                    params.nodes.forEach(function(id) {
+                        const p = positionsAtuais[id];
+                        if (p) {
+                            positionsMap[id] = { x: Math.round(p.x), y: Math.round(p.y) };
+                            const nObj = nodeIndexMap.get(id);
+                            if (nObj) { nObj.x = Math.round(p.x); nObj.y = Math.round(p.y); }
+                        }
+                    });
+                    if (Object.keys(positionsMap).length > 0) {
+                        sendValueToStreamlit({
+                            tipo: "save_layout_positions",
+                            layout: "arvore",
+                            positions: positionsMap,
+                            ts: Date.now()
+                        });
+                    }
+                }
+            });
+            network.on("oncontext", handleContextMenu);
+            network.on("dragStart", function() {
+                ocultarTodosMenusContexto();
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+            });
+            network.on("click", function(params) {
+                if (modoSelecaoAtivo || modoLassoAtivo) return;
+                const shiftKeyAtivo = !!(params.event && params.event.srcEvent && params.event.srcEvent.shiftKey);
+
+                if (params.nodes.length > 0) {
+                    const clickedId = params.nodes[0];
+
+                    if (shiftKeyAtivo) {
+                        const idx = selectedNodesQueue.indexOf(clickedId);
+                        if (idx >= 0) {
+                            selectedNodesQueue.splice(idx, 1);
+                        } else {
+                            selectedNodesQueue.push(clickedId);
+                        }
+                        selecaoMultiplaDeliberada = selectedNodesQueue.length > 0;
+                        atualizarBadgeFindPath();
+                        const idsSet = new Set(selectedNodesQueue);
+                        const updates = [];
+                        nodesDataSet.forEach(n => updates.push({
+                            id: n.id,
+                            borderWidth: idsSet.has(n.id) ? 3.5 : (n.id === masterHubId ? 3.5 : 1.2)
+                        }));
+                        nodesDataSet.update(updates);
+                        sincronizarSelecaoComPython();
+                        return;
+                    }
+
+                    selectedNodesQueue.push(clickedId);
+                    if (selectedNodesQueue.length > 6) selectedNodesQueue.shift();
+                    selecaoMultiplaDeliberada = false;
+                    atualizarBadgeFindPath();
+                    if (!pathHighlightActive) {
+                        applyHighlight(clickedId);
+                    }
+                    openInspector(clickedId);
+                    sendValueToStreamlit({ tipo: "node_click", nodeId: clickedId });
+                    sendValueToStreamlit({ tipo: "clear_selection" });
+                } else {
+                    if (!pathHighlightActive) {
+                        applyHighlight(null);
+                    }
+                    closeDrawer();
+                    sendValueToStreamlit({ tipo: "node_click", nodeId: null });
+                    sendValueToStreamlit({ tipo: "clear_selection" });
+                    if (vizinhancaIsoladaAtiva) restaurarVisaoCompleta();
+                }
+            });
+            network.on("hoverNode", function(params) {
+                hoveredNodeIdTooltip = params.node;
+                if (currentHighlightId || pathHighlightActive || edgeHighlightActive) return;
+                const connected = network.getConnectedNodes(params.node); connected.push(params.node);
+                const updates = [];
+                nodesDataSet.forEach(n => updates.push({ id: n.id, opacity: connected.includes(n.id) ? 1.0 : 0.35 }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(new Set(connected));
+            });
+            network.on("blurNode", function() {
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+                if (currentHighlightId || pathHighlightActive || edgeHighlightActive) return;
+                const updates = []; nodesDataSet.forEach(n => updates.push({ id: n.id, opacity: 1.0 })); nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(null);
+            });
+        }
+
+        function inicializarOuAtualizarRede(novosDados) {
+            const amostraPos = (novosDados.nodes || []).slice(0, 5).map(n => `${n.id}:${n.x},${n.y}`).join('|');
+            const assinaturaNova = JSON.stringify({ 
+                n: (novosDados.nodes || []).length, 
+                e: (novosDados.edges || []).length, 
+                h: novosDados.hub_id, 
+                l: novosDados.layout_ativo,
+                p: amostraPos
+            });
+            const mudouEstrutura = assinaturaNova !== assinaturaDadosAtual || !network;
+            baseFontSize = novosDados.base_font_size || 11;
+            targetSearchId = novosDados.target_node_id || "";
+
+            if (!mudouEstrutura) {
+                assinaturaDadosAtual = assinaturaNova;
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                reportarAlturaReal();
+                return;
+            }
+
+            assinaturaDadosAtual = assinaturaNova;
+            rawNodes = novosDados.nodes || [];
+            rawEdges = novosDados.edges || [];
+            masterHubId = novosDados.hub_id || "";
+            initialLayout = novosDados.layout_ativo || "organico";
+            currentLayoutMode = initialLayout;
+
+            posicionarNosOrbitalmente(rawNodes);
+            nodeIndexMap = new Map(rawNodes.map(n => [n.id, n]));
+            aplicarCurvaturaECoresArestas(rawEdges);
+            edgeOriginalStyleMap = new Map(
+                rawEdges.map(e => [e.id, {
+                    colorObj: JSON.parse(JSON.stringify(e.color)),
+                    width: e.width
+                }])
+            );
+
+            adjacencyMap = new Map(); adjacencySimples = new Map();
+            rawNodes.forEach(n => { adjacencyMap.set(n.id, []); adjacencySimples.set(n.id, []); });
+            rawEdges.forEach(e => {
+                const title = e.title ? e.title.replace('Vínculo relacional: ', '') : 'Conexão';
+                if (adjacencyMap.has(e.from)) adjacencyMap.get(e.from).push({ id: e.to, title });
+                if (adjacencyMap.has(e.to)) adjacencyMap.get(e.to).push({ id: e.from, title });
+                if (adjacencySimples.has(e.from)) adjacencySimples.get(e.from).push(e.to);
+                if (adjacencySimples.has(e.to)) adjacencySimples.get(e.to).push(e.from);
+            });
+
+            nodesDataSet.clear(); edgesDataSet.clear();
+            nodesDataSet.add(rawNodes); edgesDataSet.add(rawEdges);
+
+            if (!network) criarNetwork();
+
+            setTimeout(function() {
+                if (initialLayout && initialLayout !== "organico") {
+                    changeLayout(initialLayout, false);
+                } else {
+                    marcarLayoutAtivo("organico"); fitView();
+                }
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                updateAdaptiveLOD();
+                reportarAlturaReal();
+            }, 60);
+        }
+
+        // Recebe apenas a URL do payload (não mais o payload inteiro embutido
+        // na mensagem) — evita o teto de tamanho de mensagem do WebSocket que
+        // descartava silenciosamente grafos grandes (~1000 nós), deixando o
+        // fundo do grafo vazio sem erro nenhum. O conteúdo real chega por
+        // fetch() HTTP normal, sem esse limite, e com JSON.parse() nativo em
+        // vez de reinterpretar um payload gigante como texto de script.
+        function buscarEAplicarPayload(url) {
+            if (!url) return;
+            fetch(url)
+                .then(function(resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                })
+                .then(function(dados) { inicializarOuAtualizarRede(dados); })
+                .catch(function(err) { console.error('Falha ao carregar payload do grafo:', err); });
+        }
+
+        window.addEventListener("message", function(event) {
+            if (!event.data) return;
+            if (event.data.type === "streamlit:render_url") {
+                buscarEAplicarPayload(event.data.url);
+            } else if (event.data.type === "streamlit:selection") {
+                aplicarSelecaoExterna(event.data.ids || []);
+            }
+        });
+
+        function instalarTooltipsCustomizados() {
+            const tip = document.createElement('div');
+            tip.className = 'custom-tooltip';
+            tip.id = 'custom-tooltip-global';
+            document.body.appendChild(tip);
+
+            document.querySelectorAll('[data-tip]').forEach(el => {
+                el.addEventListener('mouseenter', () => {
+                    tip.innerText = el.getAttribute('data-tip');
+                    tip.style.display = 'block';
+                    const r = el.getBoundingClientRect();
+                    tip.style.left = (r.left + r.width / 2) + 'px';
+                    tip.style.top = (r.top - 8) + 'px';
+                    requestAnimationFrame(() => {
+                        const tw = tip.offsetWidth, th = tip.offsetHeight;
+                        let finalX = (r.left + r.width / 2) - tw / 2;
+                        let finalY = r.top - th - 8;
+                        if (finalX < 4) finalX = 4;
+                        if (finalX + tw > window.innerWidth - 4) finalX = window.innerWidth - tw - 4;
+                        if (finalY < 4) finalY = r.bottom + 8;
+                        tip.style.left = finalX + 'px';
+                        tip.style.top = finalY + 'px';
+                    });
+                });
+                el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+            });
+        }
+        instalarTooltipsCustomizados();
+
+        notifyReadyStreamlit();
+    </script>
+</body>
+</html>
