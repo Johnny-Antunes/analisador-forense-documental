@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LCFO · Mapa territorial</title>
+<link rel="stylesheet" href="mapa.css">
+</head>
+<body>
+<div id="quadro">
+  <canvas id="mapa" role="img" aria-label="Mapa territorial do Brasil"></canvas>
+  <canvas id="sobre" aria-hidden="true"></canvas>
+
+  <div class="topo">
+    <nav id="migalhas" aria-label="Local aberto"></nav>
+    <button id="voltar" class="botao-icone" title="Subir um nível (Esc)" hidden>↑</button>
+    <button id="abrir-busca" class="botao" title="Buscar estado ou município (/)">Buscar <kbd>/</kbd></button>
+  </div>
+
+  <div class="modos">
+    <div id="unidades" class="segmentado" role="group" aria-label="Recorte do mapa"></div>
+    <div id="metricas" class="segmentado" role="group" aria-label="Cor do mapa"></div>
+    <div id="marcadores" class="segmentado" role="group" aria-label="Marcadores do caso" hidden></div>
+    <button id="exportar" class="botao" title="Baixar o mapa com a legenda (PNG)">PNG</button>
+  </div>
+
+  <div id="zoom" role="group" aria-label="Zoom do mapa">
+    <button id="zoom-mais" aria-label="Aproximar">+</button>
+    <button id="zoom-menos" aria-label="Afastar">−</button>
+    <button id="centralizar" aria-label="Centralizar">◎</button>
+  </div>
+
+  <div id="legenda" aria-live="polite"></div>
+
+  <div id="linha-tempo" hidden>
+    <button id="play" class="botao-icone" aria-pressed="false" title="Reproduzir os meses">▶</button>
+    <div class="faixa-tempo">
+      <input id="mes" type="range" step="1" aria-label="Mês de referência">
+      <div id="marcas" aria-hidden="true"></div>
+    </div>
+    <b id="mes-rotulo"></b>
+  </div>
+
+  <div id="dica" role="tooltip" hidden></div>
+  <div id="perf" hidden></div>
+  <div id="aviso" role="alert" hidden></div>
+
+  <div id="busca" hidden>
+    <div class="busca-caixa">
+      <input id="busca-campo" placeholder="Estado ou município..." autocomplete="off" spellcheck="false" aria-label="Buscar estado ou município"
+             role="combobox" aria-expanded="true" aria-controls="busca-lista" aria-autocomplete="list">
+      <div id="busca-lista" role="listbox"></div>
+      <footer class="busca-teclas" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> navegar</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> fechar</span></footer>
+    </div>
+  </div>
+</div>
+<script type="module" src="mapa.js"></script>
+</body>
+</html>
