@@ -1,0 +1,3248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>LCFO Grafo Bidirecional</title>
+    <script type="text/javascript" src="vis-network.min.js"></script>
+    <script type="text/javascript">
+        if (typeof vis === "undefined") {
+            document.write('<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"><\/script>');
+        }
+    </script>
+    <style>
+        :root {
+            --bg: #121214; --surface: #18181A; --card: #222225; --card-glass: rgba(24, 24, 26, 0.92);
+            --border: #2B2B2F; --text: #EDEDED; --text-muted: #71717A; --primary: #FF7300;
+            --canvas-accent: #FF7300;
+        }
+        [data-theme="light"] {
+            --bg: #FCFCFC; --surface: #FCFCFC; --card: #FFFFFF; --card-glass: rgba(255, 255, 255, 0.90);
+            --border: #DADCE3; --text: #454545; --text-muted: #8A8D99; --primary: #FF7300;
+            --canvas-accent: #FF7300;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        /* Altura do topo coberta pelo HUD do app (enviada pelo Python em payload.layout.topo): controles,
+           banners e o drawer começam abaixo dela; o canvas do grafo continua ocupando a tela toda. */
+        :root { --seguro-topo: 0px; }
+        html, body { background: var(--bg); overflow: hidden; width: 100%; height: 100%; position: relative; }
+        #network { width: 100%; height: 100%; background-color: var(--bg); }
+
+        .top-right-controls {
+            position: absolute; top: calc(var(--seguro-topo) + 12px); right: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        .tr-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 30px; height: 28px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; position: relative; outline: none;
+        }
+        .tr-btn:hover { background: var(--surface); color: var(--text); }
+        .tr-btn.active { background: rgba(255, 115, 0, 0.2); color: var(--primary); }
+
+        .toolbar-separator { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+
+        .export-menu {
+            position: absolute; top: 36px; right: 0; width: 165px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            display: flex; flex-direction: column; gap: 2px; z-index: 50;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .export-item { padding: 7px 10px; font-size: 11px; color: var(--text); cursor: pointer; border-radius: 4px; }
+        .export-item:hover { background: var(--primary); color: #FFFFFF; }
+
+        .bottom-left-controls {
+            position: absolute; bottom: 14px; left: 14px; z-index: 30;
+            display: flex; align-items: center; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .bl-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 30px; height: 28px;
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none;
+        }
+        .bl-btn:hover { background: var(--surface); color: var(--primary); }
+
+        .left-rail {
+            position: absolute; top: 50%; left: 14px; transform: translateY(-50%); z-index: 25;
+            display: flex; flex-direction: column; gap: 4px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 8px; padding: 6px 4px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .rail-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 32px; height: 30px;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: 0.15s; outline: none; position: relative;
+        }
+        .rail-btn:hover { background: var(--surface); color: var(--primary); }
+        .rail-btn.active { background: var(--primary); color: #FFFFFF; }
+        .rail-separator { width: 20px; height: 1px; background: var(--border); margin: 3px auto; }
+
+        .rail-select-group { position: relative; display: flex; flex-direction: column; align-items: center; }
+        .rail-chevron-btn {
+            background: transparent; border: none; color: var(--text-muted); width: 32px; height: 14px;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            border-radius: 0 0 6px 6px; transition: 0.15s; margin-top: -4px;
+        }
+        .rail-chevron-btn:hover { color: var(--primary); background: var(--surface); }
+        .selecao-submenu {
+            display: none; position: absolute; left: 42px; top: 0; z-index: 40;
+            background: var(--card-glass); border: 1px solid var(--border); border-radius: 8px;
+            padding: 4px; min-width: 120px; box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            flex-direction: column; gap: 2px;
+        }
+        .selecao-submenu-item {
+            display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 5px;
+            cursor: pointer; font-size: 11px; color: var(--text); white-space: nowrap;
+        }
+        .selecao-submenu-item:hover { background: var(--surface); }
+        .selecao-submenu-item.active { color: var(--primary); background: rgba(255,115,0,0.12); font-weight: 700; }
+
+        .rail-badge {
+            position: absolute; top: -3px; right: -3px; z-index: 2;
+            background: var(--primary); color: #FFFFFF; font-size: 9px; font-weight: 700;
+            width: 15px; height: 15px; border-radius: 50%;
+            display: none; align-items: center; justify-content: center;
+            box-shadow: 0 0 0 2px var(--card-glass); pointer-events: none;
+        }
+
+        .selection-banner {
+            position: absolute; top: calc(var(--seguro-topo) + 14px); left: 58px; z-index: 25;
+            background: rgba(255, 115, 0, 0.18); border: 1px solid rgba(255, 115, 0, 0.4);
+            color: #FF7300; border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600;
+            display: flex; align-items: center; gap: 6px; pointer-events: none;
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        }
+
+        .search-panel {
+            position: absolute; left: 60px; z-index: 25; width: 210px;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 8px; padding: 6px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+        }
+        #search-panel { top: 50%; transform: translateY(-50%); }
+        .search-input-wrap { position: relative; display: flex; align-items: center; }
+        .search-panel input {
+            width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+            padding: 6px 24px 6px 8px; border-radius: 4px; font-size: 11px; outline: none;
+        }
+        .search-panel input:focus { border-color: var(--primary); }
+        .search-clear-btn {
+            position: absolute; right: 6px; background: transparent; border: none;
+            color: var(--text-muted); cursor: pointer; font-size: 14px; display: none; line-height: 1;
+        }
+        .search-results { overflow-y: auto; max-height: 220px; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+        .search-result-item {
+            background: var(--surface); border: 1px solid var(--border); padding: 6px 8px;
+            border-radius: 4px; font-size: 11px; color: var(--text); cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .search-result-item:hover { border-color: var(--primary); color: var(--primary); }
+
+        .filter-popover-title {
+            font-size: 11px; font-weight: 700; color: var(--text);
+            padding: 4px 4px 8px 4px; text-transform: uppercase; letter-spacing: 0.3px;
+        }
+        .filter-row {
+            display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; color: var(--text);
+            transition: background 0.12s;
+        }
+        .filter-row:hover { background: rgba(255,255,255,0.06); }
+        .filter-row input[type="checkbox"] { accent-color: var(--primary); width: 14px; height: 14px; flex-shrink: 0; }
+        .filter-row .flt-cor { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+        .filter-row .flt-qtd { margin-left: auto; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+
+        .minimap-container {
+            position: absolute; bottom: 14px; right: 14px; z-index: 20;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 6px; padding: 4px; pointer-events: none;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        #minimap-canvas { display: block; border-radius: 3px; }
+
+        /* Drawer como painel de vidro flutuante (mesmo estilo dos painéis laterais do mapa): margem de
+           12px, cantos arredondados e começando abaixo do HUD do app + da linha de botões do canto
+           superior direito (filtros, tema, exportar, recalcular continuam clicáveis com ele aberto). */
+        .drawer {
+            position: absolute; top: calc(var(--seguro-topo) + 56px); right: 12px; bottom: 12px;
+            width: 370px; max-width: calc(100% - 24px);
+            background: var(--card-glass); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 50; display: flex; flex-direction: column;
+            transform: translateX(calc(100% + 24px)); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            color: var(--text); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        }
+        .drawer.open { transform: translateX(0); }
+        .drawer-resize-handle {
+            position: absolute; left: -4px; top: 0; width: 8px; height: 100%; cursor: ew-resize; z-index: 60;
+        }
+        .drawer-header {
+            padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+        }
+        .drawer-close-btn { background: transparent; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+        .drawer-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
+        .drawer-tabs { display: flex; border-bottom: 1px solid var(--border); }
+        .drawer-tab {
+            flex: 1; padding: 9px; text-align: center; font-size: 11px; font-weight: 600;
+            color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+            transition: color 0.15s, border-bottom-color 0.15s;
+        }
+        .drawer-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .drawer-tab-content { display: none; flex: 1; overflow-y: auto; padding: 14px 16px; }
+        .drawer-tab-content.active { display: block; }
+        .drawer-section { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+        .drawer-field { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+        .drawer-field:last-child { border-bottom: none; }
+        .field-label { color: var(--text-muted); }
+        .field-value { color: var(--text); font-weight: 600; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .enrich-cta-btn {
+            margin: 12px 16px 6px 16px; background: var(--primary); border: none;
+            color: #FFFFFF; padding: 8px 12px; border-radius: 6px; font-weight: 700;
+            font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+        }
+        .neighbors-preview-wrap { display: flex; justify-content: center; margin: 8px 0; }
+        .neighbor-item {
+            display: flex; align-items: center; justify-content: space-between;
+            background: var(--surface); border: 1px solid var(--border); padding: 8px 10px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; margin-bottom: 6px;
+        }
+        .neighbor-item:hover { border-color: var(--primary); }
+
+        .select-rect {
+            position: absolute; border: 1.5px dashed var(--canvas-accent); background: rgba(255,115,0,0.1);
+            z-index: 15; pointer-events: none; display: none;
+        }
+        .lasso-svg {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            z-index: 15; pointer-events: none; display: none;
+        }
+
+        .neighborhood-banner {
+            position: absolute; top: calc(var(--seguro-topo) + 14px); left: 50%; transform: translateX(-50%); z-index: 35;
+            background: rgba(24, 24, 26, 0.95); border: 1px solid var(--primary);
+            border-radius: 8px; padding: 5px 12px; font-size: 11px; color: var(--text);
+            display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .neighborhood-restore-btn {
+            background: var(--primary); border: none; color: #fff; padding: 2px 8px;
+            border-radius: 4px; font-size: 10px; font-weight: 700; cursor: pointer;
+        }
+
+        .path-panel {
+            position: absolute; top: calc(var(--seguro-topo) + 58px); right: 14px; z-index: 45;
+            width: 270px; max-height: 380px; background: var(--card-glass);
+            border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            display: flex; flex-direction: column; overflow: hidden;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .path-header {
+            padding: 8px 12px; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .path-body { padding: 8px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+        .path-node-btn {
+            width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px;
+            background: transparent; border: 1px solid transparent; color: var(--text);
+            display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11px;
+        }
+        .path-node-btn:hover { background: var(--surface); border-color: var(--border); }
+        .path-edge-line {
+            display: flex; align-items: center; gap: 6px; padding: 1px 0 1px 18px;
+            font-size: 10px; color: var(--text-muted); font-weight: 600;
+        }
+
+        .modal-backdrop {
+            position: absolute; inset: 0; background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+            z-index: 1000; display: flex; align-items: center; justify-content: center;
+        }
+        .modal-card {
+            background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+            box-shadow: 0 12px 36px rgba(0,0,0,0.7); width: 380px; padding: 18px 20px;
+            display: flex; flex-direction: column;
+        }
+        .modal-header {
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+        }
+        .modal-title { font-size: 15px; font-weight: 700; color: var(--text); }
+        .modal-close { background: transparent; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+        .modal-close:hover { color: var(--text); }
+        .modal-body { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 18px; }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 8px; }
+        .modal-btn-cancel {
+            background: transparent; border: 1px solid var(--border); border-radius: 6px;
+            color: var(--text); padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .modal-btn-cancel:hover { background: var(--surface); border-color: var(--text-muted); }
+        .modal-btn-continue {
+            background: var(--primary); border: none; border-radius: 6px;
+            color: #FFFFFF; padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .modal-btn-continue:hover { background: #E0670A; }
+
+        .loading-overlay {
+            position: absolute; inset: 0; background: rgba(18, 18, 20, 0.60);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+            z-index: 900; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 12px; pointer-events: none;
+        }
+        .spinner {
+            width: 32px; height: 32px; border: 3px solid rgba(255, 115, 0, 0.2);
+            border-top-color: #FF7300; border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: 0.4px; }
+
+        .vis-tooltip {
+            display: none !important;
+        }
+
+        .node-tooltip-card {
+            position: absolute;
+            display: none;
+            z-index: 500;
+            background: var(--card-glass);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 11px;
+            color: var(--text);
+            pointer-events: none;
+            max-width: 240px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.45);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+        .node-tooltip-header {
+            display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;
+        }
+        .node-tooltip-badge {
+            font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 6px;
+            border-radius: 4px; letter-spacing: 0.4px; white-space: nowrap;
+        }
+        .node-tooltip-title {
+            font-weight: 700; font-size: 12px; color: var(--text); word-break: break-word;
+        }
+        .node-tooltip-row {
+            display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--text-muted);
+        }
+        .node-tooltip-row b { color: var(--text); font-weight: 600; }
+
+        .drawer-tab-content, .search-results, #filter-popover, .path-body {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+        .drawer-tab-content::-webkit-scrollbar,
+        .search-results::-webkit-scrollbar,
+        #filter-popover::-webkit-scrollbar,
+        .path-body::-webkit-scrollbar {
+            width: 7px;
+        }
+        .drawer-tab-content::-webkit-scrollbar-track,
+        .search-results::-webkit-scrollbar-track,
+        #filter-popover::-webkit-scrollbar-track,
+        .path-body::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .drawer-tab-content::-webkit-scrollbar-thumb,
+        .search-results::-webkit-scrollbar-thumb,
+        #filter-popover::-webkit-scrollbar-thumb,
+        .path-body::-webkit-scrollbar-thumb {
+            background-color: var(--border);
+            border-radius: 10px;
+        }
+        .drawer-tab-content::-webkit-scrollbar-thumb:hover,
+        .search-results::-webkit-scrollbar-thumb:hover,
+        #filter-popover::-webkit-scrollbar-thumb:hover,
+        .path-body::-webkit-scrollbar-thumb:hover {
+            background-color: var(--text-muted);
+        }
+        #filter-popover {
+            max-height: 260px;
+            overflow-y: auto;
+        }
+
+        /* ===================== MENUS DE CONTEXTO FLOWSINT ===================== */
+        .ctx-perigo { color: #E0684F !important; }
+        /* Quick-add: campo flutuante no ponto do duplo clique (ou no centro, tecla N). */
+        .quick-add {
+            position: absolute; z-index: 40; width: 300px; display: none;
+            background: var(--card-glass); border: 1px solid var(--border); border-radius: 10px; padding: 8px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+        }
+        .quick-add input {
+            width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+            border-radius: 6px; padding: 6px 8px; font-size: 12px; outline: none;
+        }
+        .quick-add input:focus { border-color: var(--primary); }
+        .qa-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; max-height: 120px; overflow-y: auto; }
+        .qa-chip {
+            font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text);
+            background: var(--surface); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+        }
+        .qa-chip i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+        .qa-chip b { color: var(--text-muted); font-weight: 500; }
+        .qa-chip.ativo { border-color: var(--primary); background: rgba(255,115,0,0.14); }
+        .qa-dica { margin-top: 6px; font-size: 10px; color: var(--text-muted); }
+        .qa-dica.alerta { color: #C9A66B; }
+        /* Indicador de salvamento: ocioso, pendente, salvando, salvo, erro (clicar em erro tenta de novo). */
+        .indicador-salvo { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-muted); padding: 0 6px; min-width: 14px; }
+        .indicador-salvo::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+        .indicador-salvo[data-estado="ocioso"]::after { content: ""; }
+        .indicador-salvo[data-estado="pendente"]::before { background: #C9A66B; }
+        .indicador-salvo[data-estado="pendente"]::after { content: "pendente"; }
+        .indicador-salvo[data-estado="salvando"]::before { background: var(--primary); animation: pulsar .8s infinite alternate; }
+        .indicador-salvo[data-estado="salvando"]::after { content: "salvando…"; }
+        .indicador-salvo[data-estado="salvo"]::before { background: #6FA98A; }
+        .indicador-salvo[data-estado="salvo"]::after { content: "salvo"; }
+        .indicador-salvo[data-estado="erro"]::before { background: #C0625F; }
+        .indicador-salvo[data-estado="erro"]::after { content: "erro — tentar de novo"; color: #E0684F; }
+        .indicador-salvo[data-estado="erro"] { cursor: pointer; }
+        @keyframes pulsar { from { opacity: .35; } to { opacity: 1; } }
+        .relayout-menu { position: absolute; z-index: 30; right: 14px; top: calc(var(--seguro-topo) + 58px); display: none; min-width: 230px; }
+        .path-modos { display: flex; gap: 2px; margin: 6px 0 2px; }
+        .path-modos button { flex: 1; font-size: 10px; border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 5px; padding: 3px 0; cursor: pointer; }
+        .path-modos button.ativo { border-color: var(--primary); color: var(--primary); background: rgba(255,115,0,.12); }
+        .path-nav { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin: 2px 0 4px; }
+        .path-nav button { background: none; border: 0; color: var(--text); cursor: pointer; font-size: 13px; }
+        /* Filtros por regra (item 12) */
+        #filter-popover { width: 320px !important; max-height: calc(100vh - var(--seguro-topo) - 90px); overflow-y: auto; }
+        .regra-linha { display: grid; grid-template-columns: 1fr 78px 18px; gap: 4px; margin-top: 4px; align-items: center; }
+        .regra-linha select, .regra-linha input, .regras-barra select, .regras-barra input {
+            background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 5px; font-size: 10px; padding: 3px 4px;
+            min-width: 0; color-scheme: dark; }
+        .regra-valor { grid-column: 1 / 3; display: flex; gap: 4px; }
+        .regra-valor > * { flex: 1; }
+        .regra-valor select[multiple] { height: 54px; }
+        .regra-remover { background: none; border: 0; color: var(--text-muted); cursor: pointer; font-size: 13px; }
+        .regras-barra { display: flex; gap: 4px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+        .regras-barra button { font-size: 10px; border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 5px; padding: 3px 7px; cursor: pointer; }
+        .regras-barra button.ativo { border-color: var(--primary); color: var(--primary); background: rgba(255,115,0,.12); }
+        .contador-filtro { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+        .filtros-salvos .item { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 4px; border-radius: 4px; cursor: pointer; color: var(--text); }
+        .filtros-salvos .item:hover { background: rgba(255,255,255,0.06); }
+        .filtros-salvos .item button { margin-left: auto; background: none; border: 0; color: var(--text-muted); cursor: pointer; }
+        .chips-filtro { position: absolute; z-index: 29; left: 50%; transform: translateX(-50%); top: calc(var(--seguro-topo) + 14px);
+            display: none; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: 60%; }
+        .chips-filtro span { background: var(--card-glass); border: 1px solid var(--primary); color: var(--text); border-radius: 999px;
+            padding: 2px 4px 2px 9px; font-size: 10px; display: inline-flex; align-items: center; gap: 4px; backdrop-filter: blur(12px); }
+        .chips-filtro button { background: none; border: 0; color: var(--text-muted); cursor: pointer; font-size: 12px; }
+        .ctx-subtitulo { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); padding: 4px 10px 2px; }
+        .ctx-item .ctx-param { margin-left: auto; color: var(--text-muted); display: inline-flex; }
+        .filtro-exec { position: absolute; z-index: 30; left: 50%; transform: translateX(-50%); top: calc(var(--seguro-topo) + 14px);
+            display: none; align-items: center; gap: 8px; background: var(--card-glass); border: 1px solid var(--primary); border-radius: 999px;
+            padding: 4px 6px 4px 12px; font-size: 11px; color: var(--text); backdrop-filter: blur(14px); }
+        .filtro-exec button { background: none; border: 0; color: var(--text-muted); cursor: pointer; font-size: 13px; }
+        /* Menu do vínculo manual (item 3): mesmo vidro do quick-add. */
+        .link-menu { position: absolute; z-index: 41; width: 300px; display: none; background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 10px; padding: 10px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 12px 32px rgba(0,0,0,0.55); }
+        .link-menu .lm-titulo { font-size: 12px; font-weight: 700; color: var(--text); }
+        .link-menu .lm-pontas { font-size: 10px; color: var(--text-muted); margin: 2px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .link-menu input, .link-menu select { width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border);
+            color: var(--text); border-radius: 6px; padding: 5px 7px; font-size: 11px; outline: none; color-scheme: dark; }
+        .link-menu input:focus, .link-menu select:focus { border-color: var(--primary); }
+        .link-menu .lm-linha { display: flex; gap: 6px; margin-top: 6px; }
+        .link-menu .lm-aviso { font-size: 10px; color: #C9A66B; min-height: 12px; margin-top: 3px; }
+        .link-menu .lm-botoes { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+        .link-menu button { font-size: 11px; border-radius: 6px; padding: 4px 10px; border: 1px solid var(--border); background: none; color: var(--text-muted); cursor: pointer; }
+        .link-menu button.primario { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+        .flowsint-ctx-menu {
+            position: absolute; z-index: 1000; display: none;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 8px; padding: 4px; min-width: 200px; max-width: 320px;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.65);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            color: var(--text); font-size: 11px; user-select: none;
+        }
+        .ctx-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); gap: 6px;
+        }
+        .ctx-header-info { display: flex; align-items: center; gap: 6px; overflow: hidden; flex: 1; }
+        .ctx-title {
+            font-weight: 700; font-size: 11px; color: var(--text);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .ctx-badge {
+            font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
+            border-radius: 4px; background: rgba(255,115,0,0.15); color: var(--primary);
+            border: 1px solid rgba(255,115,0,0.35); white-space: nowrap;
+        }
+        .ctx-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+        .ctx-icon-btn {
+            background: transparent; border: none; color: var(--text-muted);
+            width: 24px; height: 24px; border-radius: 4px; display: flex;
+            align-items: center; justify-content: center; cursor: pointer; transition: 0.12s;
+        }
+        .ctx-icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+        .ctx-flags-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; }
+        .ctx-subtitle { font-size: 10px; color: var(--text-muted); font-weight: 600; }
+        .flag-dot {
+            width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
+            border: 2px solid transparent; transition: transform 0.15s, border-color 0.15s;
+        }
+        .flag-dot:hover { transform: scale(1.15); border-color: #FFFFFF; }
+        .ctx-separator { height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0; }
+        .ctx-item {
+            display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+            border-radius: 5px; cursor: pointer; font-size: 11px; color: var(--text);
+            transition: background 0.12s, color 0.12s;
+        }
+        .ctx-item:hover { background: rgba(255,255,255,0.08); color: #FFFFFF; }
+        .ctx-item svg { flex-shrink: 0; }
+
+        .ctx-edge-bar { align-items: center; padding: 3px 6px; gap: 4px; min-width: 210px; }
+        .ctx-edge-input-wrap { flex: 1; }
+        .ctx-input {
+            width: 100%; background: rgba(18,18,20,0.95); border: 1px solid var(--border);
+            border-radius: 4px; color: var(--text); font-size: 11px; padding: 4px 8px; outline: none;
+        }
+        .ctx-input:focus { border-color: var(--primary); }
+
+        .custom-tooltip {
+            position: fixed; z-index: 2000; display: none;
+            background: var(--card-glass); border: 1px solid var(--border);
+            border-radius: 6px; padding: 5px 9px; font-size: 11px; font-weight: 600;
+            color: var(--text); white-space: nowrap; pointer-events: none;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body>
+    <div class="top-right-controls">
+        <span id="indicador-salvo" class="indicador-salvo" data-estado="ocioso" onclick="tentarSalvarDeNovo()" data-tip="Salvamento"></span>
+        <button class="tr-btn active" id="btn-dock-filter" onclick="toggleFilterPopover()" data-tip="Filtrar Camadas">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+        <button class="tr-btn" id="btn-dock-theme" onclick="toggleTheme()" data-tip="Alternar Tema Claro/Escuro">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        <div class="toolbar-separator"></div>
+        <div style="position:relative;">
+            <button class="tr-btn" onclick="toggleExportMenu()" data-tip="Exportar Grafo">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+            <div id="export-menu" class="export-menu" style="display:none;">
+                <div class="export-item" onclick="exportPNG()">Exportar como PNG</div>
+                <div class="export-item" onclick="exportJSON()">Exportar como JSON</div>
+                <div class="export-item" onclick="exportHTML()">Exportar como HTML (Completo)</div>
+            </div>
+        </div>
+        <button class="tr-btn" onclick="toggleMenuRelayout()" data-tip="Recalcular Layout">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+    </div>
+
+    <div id="relayout-menu" class="search-panel relayout-menu">
+        <div class="filter-popover-title">Recalcular layout</div>
+        <div class="ctx-item" onclick="recalcularLayout(false)">Só quem não tem posição <span style="margin-left:auto; color:var(--text-muted); font-size:9px;">padrão</span></div>
+        <div class="ctx-item" onclick="recalcularLayout(true)">Refazer tudo…</div>
+        <div class="qa-dica">Nós fixados nunca são movidos.</div>
+    </div>
+
+    <div id="filter-popover" class="search-panel" style="display:none; top:calc(var(--seguro-topo) + 58px); right:14px; left:auto; width:220px;">
+        <div class="filter-popover-title">Filtros de Entidade</div>
+        <!-- Montado a partir de payload.tipos (registro de tipos no Python): tipo novo aparece sozinho. -->
+        <div id="filtros-tipo"></div>
+        <!-- Regras combináveis (campo, operador, valor), avaliadas aqui mesmo, sem ida ao servidor. -->
+        <div class="filter-popover-title" style="margin-top:8px;">Regras</div>
+        <div id="regras-filtro"></div>
+        <div class="regras-barra">
+            <button onclick="adicionarRegra()">+ regra</button>
+            <button id="comb-todas" class="ativo" onclick="definirCombinacao('todas')" title="Todas as regras (E)">Todas</button>
+            <button id="comb-qualquer" onclick="definirCombinacao('qualquer')" title="Qualquer regra (OU)">Qualquer</button>
+            <button id="modo-ocultar" class="ativo" onclick="definirModoFiltro('ocultar')">Ocultar o resto</button>
+            <button id="modo-destacar" onclick="definirModoFiltro('destacar')">Destacar</button>
+        </div>
+        <div class="contador-filtro" id="contador-filtro"></div>
+        <div class="regras-barra">
+            <input id="nome-filtro" placeholder="Nome do filtro" style="flex:1;" />
+            <button onclick="salvarFiltroAtual()">Salvar</button>
+            <button onclick="limparRegras()">Limpar</button>
+        </div>
+        <div class="filter-popover-title" style="margin-top:8px;">Filtros salvos</div>
+        <div id="filtros-salvos" class="filtros-salvos"></div>
+    </div>
+    <div id="chips-filtro" class="chips-filtro"></div>
+
+    <div class="left-rail">
+        <button class="rail-btn" onclick="limparSelecaoMultipla()" data-tip="Limpar Seleção">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </button>
+
+        <div class="rail-select-group">
+            <button class="rail-btn" id="rail-select-main" onclick="toggleModoSelecaoPrincipal()" data-tip="Selecionar (segure &quot;S&quot;)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51z"/></svg>
+            </button>
+            <button class="rail-chevron-btn" onclick="toggleSelecaoSubmenu(event)" data-tip="Escolher modo de seleção">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div id="selecao-submenu" class="selecao-submenu">
+                <div class="selecao-submenu-item active" data-mode="rectangle" onclick="definirSubmodoSelecao('rectangle')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"><rect x="3" y="3" width="18" height="18" rx="1"/></svg>
+                    Retângulo
+                </div>
+                <div class="selecao-submenu-item" data-mode="lasso" onclick="definirSubmodoSelecao('lasso')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 8c0-3 3-5 7-5s7 2 7 5-3 5-7 5c-2 0-3.5-.5-4.5-1.3C6.2 12.8 5 14.5 5 16.5 5 19 7 21 9.5 21c1.4 0 2.7-.6 3.5-1.6"/><circle cx="6" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>
+                    Laço
+                </div>
+            </div>
+        </div>
+
+        <button class="rail-btn" onclick="executarFindPath()" data-tip="Find Path (2 nós selecionados)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v2"/></svg>
+            <span id="find-path-badge" class="rail-badge">2</span>
+        </button>
+        <button class="rail-btn" id="rail-search" onclick="toggleSearchPanel()" data-tip="Buscar Entidade">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <div class="rail-separator"></div>
+        <button class="rail-btn active" id="rail-organico" onclick="changeLayout('organico')" data-tip="Força Orgânica">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M12 9V5m0 14v-4m-3-3H5m14 0h-4"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-leque" onclick="changeLayout('leque', false)" data-tip="Leque compacto">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="3.5" r="1.6"/><circle cx="19.4" cy="8" r="1.6"/><circle cx="19.4" cy="16" r="1.6"/><circle cx="4.6" cy="8" r="1.6"/><circle cx="4.6" cy="16" r="1.6"/><path d="M12 9.5V5.1M14.2 10.8l3.8-2M14.2 13.2l3.8 2M9.8 10.8l-3.8-2M9.8 13.2l-3.8 2"/></svg>
+        </button>
+        <button class="rail-btn" id="rail-arvore" onclick="changeLayout('arvore', false)" data-tip="Hierarquia (Tree)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="4" rx="1"/><rect x="4" y="17" width="6" height="4" rx="1"/><rect x="14" y="17" width="6" height="4" rx="1"/><path d="M12 7v5m-5 5v-2a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v2"/></svg>
+        </button>
+    </div>
+
+    <div id="selection-banner" class="selection-banner" style="display:none;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span id="selection-banner-text">Seleção retangular ativa</span>
+    </div>
+
+    <div id="neighborhood-banner" class="neighborhood-banner" style="display:none;">
+        <span>Vizinhança isolada: <b id="nb-focus-name"></b></span>
+        <button class="neighborhood-restore-btn" onclick="restaurarVisaoCompleta()">Restaurar</button>
+    </div>
+
+    <div id="path-finder-panel" class="path-panel" style="display:none;">
+        <div class="path-header">
+            <span style="font-size:12px; font-weight:700; color:var(--text);" id="path-header-count">Path (0 nodes)</span>
+            <button style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:14px;" onclick="fecharPathPanel()">&times;</button>
+        </div>
+        <div class="path-modos" id="path-modos">
+            <button data-modo="menor" class="ativo" onclick="trocarModoCaminho('menor')" title="Menor número de saltos">Menor</button>
+            <button data-modo="cronologico" onclick="trocarModoCaminho('cronologico')" title="Só avança por vínculos com data igual ou posterior">Cronológico</button>
+            <button data-modo="ponderado" onclick="trocarModoCaminho('ponderado')" title="Prefere vínculos com mais ocorrências">Ponderado</button>
+        </div>
+        <div class="path-nav" id="path-nav" style="display:none;"><button onclick="navegarCaminho(-1)">‹</button><span id="path-nav-txt"></span><button onclick="navegarCaminho(1)">›</button></div>
+        <div class="path-body" id="path-body-content"></div>
+    </div>
+
+    <div id="search-panel" class="search-panel" style="display:none;">
+        <div class="search-input-wrap">
+            <input type="text" id="search-input" placeholder="Buscar..." oninput="filtrarListaBusca(this.value)">
+            <button id="search-clear-btn" class="search-clear-btn" onclick="limparBuscaGrafo()">&times;</button>
+        </div>
+        <div id="search-results" class="search-results" style="display:none;"></div>
+    </div>
+
+    <div class="bottom-left-controls">
+        <button class="bl-btn" onclick="zoomIn()" data-tip="Zoom In">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="zoomOut()" data-tip="Zoom Out">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="bl-btn" onclick="fitView()" data-tip="Enquadrar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+    </div>
+
+    <div id="minimap-container" class="minimap-container">
+        <canvas id="minimap-canvas" width="160" height="120"></canvas>
+    </div>
+
+
+    <!-- Worker do grafo (layout e caminho fora da thread principal). Fica EMBUTIDO e é carregado
+         por Blob: assim também funciona no HTML exportado aberto por file://, onde um worker em
+         arquivo separado não carrega. Sem dependências. -->
+    <script type="text/js-worker" id="grafo-worker-src">
+    'use strict';
+    function adjacencia(nos, arestas) {
+        const adj = new Map(nos.map(n => [n.id, []]));
+        arestas.forEach(a => { if (adj.has(a[0]) && adj.has(a[1]) && a[0] !== a[1]) { adj.get(a[0]).push(a); adj.get(a[1]).push(a); } });
+        return adj;
+    }
+    const outro = (a, id) => a[0] === id ? a[1] : a[0];
+
+    // Árvore (o layout de níveis que antes rodava na thread principal).
+    function layoutArvore(nos, arestas, hub) {
+        const adj = adjacencia(nos, arestas), niveis = new Map(), pos = {};
+        const raiz = hub && adj.has(hub) ? hub : (nos[0] && nos[0].id);
+        if (raiz === undefined) return pos;
+        const fila = [raiz]; niveis.set(raiz, 0);
+        while (fila.length) { const u = fila.shift(); adj.get(u).forEach(a => { const v = outro(a, u); if (!niveis.has(v)) { niveis.set(v, niveis.get(u) + 1); fila.push(v); } }); }
+        const grupos = new Map();
+        nos.forEach(n => { const l = niveis.has(n.id) ? niveis.get(n.id) : 1; if (!grupos.has(l)) grupos.set(l, []); grupos.get(l).push(n.id); });
+        let y = -180;
+        const max = Math.max(0, ...grupos.keys());
+        for (let l = 0; l <= max; l++) {
+            const ids = grupos.get(l) || []; if (!ids.length) continue;
+            if (l === 0) { ids.forEach(id => { pos[id] = { x: 0, y }; }); y += 160; continue; }
+            const cols = ids.length <= 12 ? ids.length : Math.min(22, Math.max(8, Math.ceil(Math.sqrt(ids.length * 1.4))));
+            const linhas = Math.ceil(ids.length / cols);
+            for (let r = 0; r < linhas; r++) {
+                const linha = ids.slice(r * cols, (r + 1) * cols), x0 = -((linha.length - 1) * 160) / 2;
+                linha.forEach((id, c) => { pos[id] = { x: Math.round(x0 + c * 160), y: Math.round(y + r * 80) }; });
+            }
+            y += linhas * 80 + 140;
+        }
+        return pos;
+    }
+
+    // Leque compacto (como o do i2): por componente, o nó de maior grau no centro e a árvore BFS
+    // em leque radial — cada ramo recebe um ângulo proporcional às folhas que carrega; o raio
+    // cresce com o comprimento dos rótulos. Componentes lado a lado, das maiores para as menores.
+    function layoutLeque(nos, arestas, rotulos) {
+        const adj = adjacencia(nos, arestas), visto = new Set(), comps = [];
+        nos.forEach(n => {
+            if (visto.has(n.id)) return;
+            const c = [], f = [n.id]; visto.add(n.id);
+            while (f.length) { const u = f.pop(); c.push(u); adj.get(u).forEach(a => { const v = outro(a, u); if (!visto.has(v)) { visto.add(v); f.push(v); } }); }
+            comps.push(c);
+        });
+        comps.sort((a, b) => b.length - a.length);
+        const pos = {}, larguraRot = id => Math.min(160, 30 + 6 * ((rotulos[id] || '').length));
+        let cursorX = 0, cursorY = 0, alturaLinha = 0;
+        const LARGURA_MAX = 6000;
+        comps.forEach(c => {
+            const centro = c.reduce((m, id) => adj.get(id).length > adj.get(m).length ? id : m, c[0]);
+            const pai = new Map([[centro, null]]), filhos = new Map(c.map(id => [id, []])), prof = new Map([[centro, 0]]), ordem = [centro];
+            for (let i = 0; i < ordem.length; i++) {
+                const u = ordem[i];
+                adj.get(u).forEach(a => { const v = outro(a, u); if (!pai.has(v)) { pai.set(v, u); prof.set(v, prof.get(u) + 1); filhos.get(u).push(v); ordem.push(v); } });
+            }
+            const folhas = new Map();
+            for (let i = ordem.length - 1; i >= 0; i--) { const u = ordem[i]; const fs = filhos.get(u); folhas.set(u, fs.length ? fs.reduce((s, v) => s + folhas.get(v), 0) : 1); }
+            const raioNivel = new Map(), qtdNivel = new Map();
+            ordem.forEach(id => { const p = prof.get(id); raioNivel.set(p, Math.max(raioNivel.get(p) || 0, larguraRot(id))); qtdNivel.set(p, (qtdNivel.get(p) || 0) + 1); });
+            const raio = new Map([[0, 0]]);
+            let acc = 0;
+            for (let p = 1; raioNivel.has(p); p++) {
+                acc += 70 + raioNivel.get(p - 1) * 0.5 + raioNivel.get(p) * 0.5;
+                acc = Math.max(acc, qtdNivel.get(p) * 46 / (2 * Math.PI));     // espaço no anel para todos os nós do nível
+                raio.set(p, acc);
+            }
+            const local = { [centro]: { x: 0, y: 0 } };
+            const ang = new Map([[centro, [0, 2 * Math.PI]]]);
+            ordem.forEach(u => {
+                const [a0, a1] = ang.get(u), fs = filhos.get(u), total = folhas.get(u) || 1;
+                let a = a0;
+                fs.forEach(v => {
+                    const span = (a1 - a0) * folhas.get(v) / total, meio = a + span / 2, r = raio.get(prof.get(v));
+                    local[v] = { x: r * Math.cos(meio), y: r * Math.sin(meio) };
+                    ang.set(v, [a, a + span]); a += span;
+                });
+            });
+            const R = (raio.get(Math.max(...prof.values())) || 0) + 80;
+            if (cursorX + 2 * R > LARGURA_MAX && cursorX > 0) { cursorX = 0; cursorY += alturaLinha + 80; alturaLinha = 0; }
+            c.forEach(id => { pos[id] = { x: Math.round(cursorX + R + local[id].x), y: Math.round(cursorY + R + local[id].y) }; });
+            cursorX += 2 * R + 80; alturaLinha = Math.max(alturaLinha, 2 * R);
+        });
+        return pos;
+    }
+
+    // Menor por saltos: BFS com todos os predecessores (empates devolvem todos os caminhos mínimos).
+    function menores(adj, ini, fim, limite) {
+        const dist = new Map([[ini, 0]]), pred = new Map([[ini, []]]), fila = [ini];
+        while (fila.length) {
+            const u = fila.shift(); if (u === fim) continue;
+            adj.get(u).forEach(a => {
+                const v = outro(a, u);
+                if (!dist.has(v)) { dist.set(v, dist.get(u) + 1); pred.set(v, [u]); fila.push(v); }
+                else if (dist.get(v) === dist.get(u) + 1) pred.get(v).push(u);
+            });
+        }
+        if (!dist.has(fim)) return [];
+        const out = [], pilha = [[fim]];
+        while (pilha.length && out.length < limite) {
+            const c = pilha.pop(), u = c[0];
+            if (u === ini) { out.push(c); continue; }
+            pred.get(u).forEach(p => pilha.push([p, ...c]));
+        }
+        return out;
+    }
+
+    function dijkstra(adj, ini, fim, custo, aceitar) {
+        const d = new Map([[ini, aceitar ? '' : 0]]), prev = new Map(), viaData = new Map(), feitos = new Set();
+        const menor = (a, b) => aceitar ? a < b : a < b;
+        while (true) {
+            let u = null;
+            d.forEach((val, k) => { if (!feitos.has(k) && (u === null || menor(val, d.get(u)))) u = k; });
+            if (u === null || u === fim) break;
+            feitos.add(u);
+            adj.get(u).forEach(a => {
+                const v = outro(a, u); if (feitos.has(v)) return;
+                if (aceitar) {                                       // cronológico: chegada mais cedo, datas não decrescentes
+                    const dt = (a[3] || []).find(x => x >= d.get(u));
+                    if (dt === undefined) return;
+                    if (!d.has(v) || dt < d.get(v)) { d.set(v, dt); prev.set(v, u); viaData.set(v, dt); }
+                } else {
+                    const nd = d.get(u) + custo(a);
+                    if (!d.has(v) || nd < d.get(v)) { d.set(v, nd); prev.set(v, u); }
+                }
+            });
+        }
+        if (!d.has(fim)) return null;
+        const c = [fim], datas = [];
+        while (c[0] !== ini) { if (aceitar) datas.unshift(viaData.get(c[0])); c.unshift(prev.get(c[0])); }
+        return { caminho: c, datas };
+    }
+
+    self.onmessage = function(ev) {
+        const m = ev.data, t0 = performance.now();
+        let res = {};
+        if (m.tipo === 'layout') {
+            res.posicoes = m.algoritmo === 'leque' ? layoutLeque(m.nos, m.arestas, m.rotulos || {}) : layoutArvore(m.nos, m.arestas, m.hub);
+        } else if (m.tipo === 'caminho') {
+            const adj = adjacencia(m.nos, m.arestas);
+            if (!adj.has(m.inicio) || !adj.has(m.fim)) res.caminhos = [];
+            else if (m.modo === 'cronologico') {
+                const r = dijkstra(adj, m.inicio, m.fim, null, true);
+                res.caminhos = r ? [r.caminho] : []; res.datas = r ? r.datas : [];
+            } else if (m.modo === 'ponderado') {
+                const r = dijkstra(adj, m.inicio, m.fim, a => 1 / Math.max(1, a[2] || 1), false);
+                res.caminhos = r ? [r.caminho] : [];
+            } else res.caminhos = menores(adj, m.inicio, m.fim, 20);
+        }
+        res.id = m.id; res.ms = Math.round(performance.now() - t0);
+        self.postMessage(res);
+    };
+    </script>
+
+    <div id="filtro-exec" class="filtro-exec"><span id="filtro-exec-txt"></span><button onclick="limparFiltroExecucao()" title="Mostrar tudo">×</button></div>
+
+    <div id="quick-add" class="quick-add">
+        <input id="qa-input" type="text" autocomplete="off" spellcheck="false" placeholder="CPF, telefone, placa, endereço…" />
+        <div id="qa-chips" class="qa-chips"></div>
+        <div id="qa-dica" class="qa-dica">Enter cria · Tab alterna o tipo · Esc cancela</div>
+    </div>
+
+    <div id="link-menu" class="link-menu">
+        <div class="lm-titulo" id="lm-titulo">Novo vínculo</div>
+        <div class="lm-pontas" id="lm-pontas"></div>
+        <input id="lm-rotulo" list="lm-sugestoes" autocomplete="off" placeholder="Rótulo (pai, sócio, laranja…)" />
+        <datalist id="lm-sugestoes"></datalist>
+        <div id="lm-aviso" class="lm-aviso"></div>
+        <div class="lm-linha">
+            <select id="lm-direcao" title="Direção"></select>
+            <select id="lm-situacao" title="Situação"><option value="confirmado">Confirmado</option><option value="hipotese">Hipótese</option></select>
+        </div>
+        <div class="lm-linha">
+            <input id="lm-data" type="date" title="Data de referência (opcional)" />
+            <select id="lm-confianca" title="Confiança (opcional)"><option value="">Confiança</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+        </div>
+        <div class="lm-linha"><input id="lm-obs" placeholder="Observação ou fonte (ex.: informado pelo cliente em 12/09)" /></div>
+        <div class="lm-botoes"><button onclick="cancelarMenuVinculo()">Cancelar</button><button class="primario" onclick="confirmarMenuVinculo()">Gravar</button></div>
+        <div class="qa-dica">Enter grava · Esc descarta</div>
+    </div>
+
+    <!-- MENU 1: CONTEXTO DO NÓ -->
+    <div id="ctx-node-menu" class="flowsint-ctx-menu">
+        <div class="ctx-header">
+            <div class="ctx-header-info">
+                <span id="ctx-node-label" class="ctx-title"></span>
+                <span id="ctx-node-type" class="ctx-badge"></span>
+            </div>
+            <div class="ctx-header-actions">
+                <button class="ctx-icon-btn" onclick="ctxCopiarDado()" data-tip="Copiar Identificador"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                <button class="ctx-icon-btn" onclick="ctxAbrirDrawer()" data-tip="Inspecionar Atributos"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+            </div>
+        </div>
+        <div class="ctx-flags-row">
+            <span class="ctx-subtitle">Flag:</span>
+            <div class="flag-dot" style="background:#EF4444;" onclick="ctxAplicarFlag('red')" data-tip="Vermelho"></div>
+            <div class="flag-dot" style="background:#F97316;" onclick="ctxAplicarFlag('orange')" data-tip="Laranja"></div>
+            <div class="flag-dot" style="background:#3B82F6;" onclick="ctxAplicarFlag('blue')" data-tip="Azul"></div>
+            <div class="flag-dot" style="background:#22C55E;" onclick="ctxAplicarFlag('green')" data-tip="Verde"></div>
+            <div class="flag-dot" style="background:#EAB308;" onclick="ctxAplicarFlag('yellow')" data-tip="Amarelo"></div>
+        </div>
+        <div class="ctx-separator"></div>
+        <div class="ctx-item" onclick="ctxCentralizar()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg> Focar no Canvas</div>
+        <div class="ctx-item" onclick="ctxIsolar()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Isolar Vizinhança (Destacar)</div>
+        <div class="ctx-item" onclick="ctxIsolarVizinhanca()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg> Isolar Vizinhança (Ocultar Demais)</div>
+        <div class="ctx-separator"></div>
+        <!-- Nó trazido pelo analista (Enrich/Add/manual): sai para a lixeira. Nó oficial (blacklist): só Isolar. -->
+        <div class="ctx-item ctx-perigo" id="ctx-remover-no" onclick="ctxRemoverNo()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg> Remover do sketch…</div>
+        <div class="ctx-item" id="ctx-isolar-no" onclick="ctxIsolarNoOficial()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Isolar nó (ocultar do sketch)…</div>
+        <div class="ctx-item" id="ctx-fixar" onclick="const i=contextMenuNodeId; ocultarTodosMenusContexto(); if (i) alternarFixado(i);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5M9 3h6l-1 6 4 4H6l4-4z"/></svg> <span id="ctx-fixar-txt">Fixar posição</span></div>
+        <div id="ctx-pivos"></div>
+        <div class="ctx-item" onclick="ctxEnrich()" style="color:var(--primary); font-weight:700;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Enriquecer Vínculos (Enrich)</div>
+    </div>
+
+    <!-- MENU 2: CONTEXTO DA ARESTA/LINHA -->
+    <div id="ctx-edge-menu" class="flowsint-ctx-menu ctx-edge-bar">
+        <div class="ctx-edge-input-wrap">
+            <input type="text" id="ctx-edge-input" class="ctx-input" placeholder="Vínculo relacional" readonly />
+        </div>
+        <div class="ctx-header-actions">
+            <button class="ctx-icon-btn" onclick="ctxCopiarRotuloEdge()" data-tip="Copiar Título do Vínculo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="ctx-icon-btn" id="ctx-editar-edge" onclick="ctxEditarEdge()" data-tip="Editar vínculo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            <button class="ctx-icon-btn" id="ctx-anotar-edge" onclick="ctxAnotarEdge()" data-tip="Anotar vínculo (a aresta da base fica intacta)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/></svg></button>
+            <button class="ctx-icon-btn ctx-perigo" id="ctx-remover-edge" onclick="ctxRemoverEdge()" data-tip="Remover vínculo do sketch"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+            <button class="ctx-icon-btn" onclick="ctxDestacarEdge()" data-tip="Destacar Apenas Este Vínculo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+    </div>
+
+    <!-- MENU 3: CONTEXTO DO CAMPO VAZIO / SELEÇÃO MÚLTIPLA -->
+    <div id="ctx-bg-menu" class="flowsint-ctx-menu" style="min-width: 220px;">
+        <div id="ctx-bg-empty-section">
+            <div class="ctx-item" onclick="ctxBuscarEntidade()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Buscar Entidade</div>
+            <div class="ctx-item" onclick="ctxRecalcularLayoutMenu()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Recalcular Layout</div>
+        </div>
+        <div id="ctx-bg-multi-section" style="display:none;">
+            <div class="ctx-header">
+                <span id="ctx-multi-count" class="ctx-title">0 selecionados</span>
+                <button class="ctx-icon-btn" onclick="ctxLimparSelecaoBg()" data-tip="Limpar Seleção"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></button>
+            </div>
+            <div class="ctx-separator"></div>
+            <div class="ctx-item" onclick="ctxCopiarLoteTexto()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copiar lista como texto</div>
+            <div class="ctx-item" id="ctx-criar-vinculo" onclick="ctxCriarVinculoSelecao()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Criar vínculo…</div>
+            <div class="ctx-item" id="ctx-fundir" onclick="ctxFundirSelecao()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg> Fundir…</div>
+            <div class="ctx-item ctx-perigo" onclick="ctxRemoverSelecao()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg> Remover selecionados do sketch…</div>
+            <div class="ctx-item" onclick="ctxExportarLoteJson()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> Exportar seleção como JSON</div>
+        </div>
+    </div>
+
+    <div id="network"></div>
+    <div id="select-rect" class="select-rect"></div>
+    <svg id="lasso-svg" class="lasso-svg"><polygon id="lasso-poly" fill="rgba(255,115,0,0.12)" stroke="var(--canvas-accent)" stroke-width="1.5" stroke-dasharray="4 3" /></svg>
+    <div id="node-tooltip" class="node-tooltip-card"></div>
+
+    <div id="loading-overlay" class="loading-overlay" style="display:none;">
+        <div class="spinner"></div>
+        <div class="loading-text">Regenerating layout...</div>
+    </div>
+
+    <div id="modal-confirm-hierarchy" class="modal-backdrop" style="display:none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <span class="modal-title" id="modal-relayout-titulo">Refazer o layout?</span>
+                <button class="modal-close" onclick="fecharModalHierarchy()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <span id="modal-relayout-corpo">As posições arrumadas à mão neste layout serão descartadas e recalculadas. Nós fixados ficam onde estão.</span>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn-cancel" onclick="fecharModalHierarchy()">Cancelar</button>
+                <button class="modal-btn-continue" onclick="confirmarHierarchyLayout()">Refazer tudo</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="inspector-drawer" class="drawer">
+        <div id="drawer-resize-handle" class="drawer-resize-handle" title="Arraste para ajustar largura"></div>
+        <div class="drawer-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span id="drawer-badge" class="drawer-badge"></span>
+                <span id="drawer-title" style="font-weight:700; font-size:13px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+            </div>
+            <button class="drawer-close-btn" onclick="closeDrawer()">&times;</button>
+        </div>
+        <div class="drawer-tabs">
+            <div class="drawer-tab active" data-tab="details" onclick="switchDrawerTab('details')">Properties</div>
+            <div class="drawer-tab" data-tab="neighbors" onclick="switchDrawerTab('neighbors')">Neighbors</div>
+            <div class="drawer-tab" data-tab="relations" onclick="switchDrawerTab('relations')">Relations</div>
+        </div>
+        <div id="tab-details" class="drawer-tab-content active">
+            <button class="enrich-cta-btn" onclick="dispararEnrich()">Enriquecer Vínculos (Enrich)</button>
+            <button class="enrich-cta-btn" style="margin-top:6px; background:transparent; border:1px solid var(--border); color:var(--text);"
+                    onclick="if (currentInspectedNodeId) sendValueToStreamlit({ tipo: 'node_select', node_id: currentInspectedNodeId, ts: Date.now() })">
+                Editar campos, nota e aparência…</button>
+            <div id="drawer-origem" style="font-size:10px; color:var(--text-muted); margin-top:8px;"></div>
+            <div class="drawer-section" style="margin-top:12px;">
+                <div class="drawer-field"><span class="field-label">Identificador:</span><span id="drawer-val" class="field-value"></span></div>
+                <div id="drawer-row-nome" class="drawer-field" style="display:none;"><span class="field-label">Nome:</span><span id="drawer-nome" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Conexões:</span><span id="drawer-degree" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Intermediação:</span><span id="drawer-betweenness" class="field-value"></span></div>
+                <div class="drawer-field"><span class="field-label">Comunidade:</span><span id="drawer-community" class="field-value"></span></div>
+            </div>
+        </div>
+        <div id="tab-neighbors" class="drawer-tab-content">
+            <div class="neighbors-preview-wrap"><canvas id="drawer-neighbors-preview" width="260" height="130"></canvas></div>
+            <div id="drawer-neighbors-list"></div>
+        </div>
+        <div id="tab-relations" class="drawer-tab-content">
+            <div id="drawer-relations-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+    </div>
+
+    <script>
+        function sendValueToStreamlit(value) {
+            if (value && typeof ESCRITAS !== 'undefined' && ESCRITAS.has(value.tipo)) definirSalvamento('salvando');
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value, dataType: "json" }, "*");
+        }
+        function setFrameHeightStreamlit(height) {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }, "*");
+        }
+        function notifyReadyStreamlit() {
+            window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+        }
+
+        let rawNodes = [], rawEdges = [], masterHubId = "", targetSearchId = "";
+        let initialLayout = "organico", currentLayoutMode = "organico", baseFontSize = 11, assinaturaDadosAtual = "";
+        let network = null;
+        const nodesDataSet = new vis.DataSet([]);
+        const edgesDataSet = new vis.DataSet([]);
+        let nodeIndexMap = new Map(), adjacencyMap = new Map(), adjacencySimples = new Map();
+        let contextMenuNodeId = null, contextMenuEdgeId = null, currentInspectedNodeId = null, currentHighlightId = null;
+        let selectedNodesQueue = [];
+        let selecaoMultiplaDeliberada = false;
+        let submodoSelecao = 'rectangle';
+        let modoSelecaoAtivo = false;
+        let modoLassoAtivo = false;
+        let isLodSimplified = false;
+        let temaAtualBg = '#121214';
+        let isAdaptive = true;
+        let hoveredNodeIdTooltip = null;
+        let tooltipConteudoAtualId = null;
+        let vizinhancaIsoladaAtiva = false;
+        let pathHighlightActive = false;
+        let edgeHighlightActive = false;
+        const container = document.getElementById('network');
+
+        const FLAG_CORES = { red: '#EF4444', orange: '#F97316', blue: '#3B82F6', green: '#22C55E', yellow: '#EAB308' };
+        let rotulosFlags = {};                 // significado de cada cor neste sketch (editável no painel de aparência)
+        const EDGE_COLOR_DIMMED = 'rgba(120, 120, 120, 0.28)';
+        let edgeOriginalStyleMap = new Map();
+
+        function desenharGridPontilhado(ctx) {
+            if (!network) return;
+            const scale = network.getScale();
+            if (!scale || scale < 0.22) return;
+
+            const canvasEl = container.querySelector('canvas');
+            if (!canvasEl) return;
+            const topLeft = network.DOMtoCanvas({ x: 0, y: 0 });
+            const bottomRight = network.DOMtoCanvas({ x: canvasEl.clientWidth, y: canvasEl.clientHeight });
+            const espacamentoGrid = 42;
+            if (((bottomRight.x - topLeft.x) / espacamentoGrid) * ((bottomRight.y - topLeft.y) / espacamentoGrid) > 6000) return;
+            const startX = Math.floor(topLeft.x / espacamentoGrid) * espacamentoGrid;
+            const startY = Math.floor(topLeft.y / espacamentoGrid) * espacamentoGrid;
+            ctx.save();
+            ctx.fillStyle = "rgba(184, 184, 184, 0.14)";
+            for (let x = startX; x <= bottomRight.x; x += espacamentoGrid) {
+                for (let y = startY; y <= bottomRight.y; y += espacamentoGrid) {
+                    ctx.beginPath();
+                    ctx.arc(x, y, 1.2, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+        }
+
+        function construirConteudoTooltip(nodeId) {
+            const nodeObj = nodeIndexMap.get(nodeId);
+            const tooltip = document.getElementById('node-tooltip');
+            if (!nodeObj || !tooltip) return;
+
+            const tipoLabel = (nodeObj.tipo || 'ENTIDADE').toUpperCase();
+            const valorLabel = nodeObj.valor || nodeObj.label || nodeObj.id;
+            const grau = nodeObj.degree !== undefined ? nodeObj.degree : ((adjacencySimples.get(nodeId) || []).length);
+            const corBase = nodeObj.color ? (nodeObj.color.border || nodeObj.color.background || nodeObj.color) : '#FF7300';
+
+            let linhaNome = '';
+            if (nodeObj.tipo === 'cpf' && nodeObj.nome_titular) {
+                linhaNome = `<div class="node-tooltip-row"><span>Nome:</span><b>${nodeObj.nome_titular}</b></div>`;
+            }
+
+            tooltip.innerHTML = `
+                <div class="node-tooltip-header">
+                    <span class="node-tooltip-badge" style="background:${corBase}26; color:${corBase}; border:1px solid ${corBase}55;">${tipoLabel}</span>
+                    <span class="node-tooltip-title">${valorLabel}</span>
+                </div>
+                ${linhaNome}
+                <div class="node-tooltip-row"><span>Conexões:</span><b>${grau}</b></div>
+            `;
+            tooltipConteudoAtualId = nodeId;
+        }
+
+        function posicionarTooltip(clientX, clientY) {
+            const tooltip = document.getElementById('node-tooltip');
+            if (!tooltip || tooltip.style.display !== 'block') return;
+            const rect = container.getBoundingClientRect();
+            let x = clientX - rect.left + 16;
+            let y = clientY - rect.top + 16;
+            const tw = tooltip.offsetWidth || 180;
+            const th = tooltip.offsetHeight || 50;
+            if (x + tw > rect.width - 8) x = clientX - rect.left - tw - 16;
+            if (y + th > rect.height - 8) y = clientY - rect.top - th - 16;
+            tooltip.style.left = Math.max(4, x) + 'px';
+            tooltip.style.top = Math.max(4, y) + 'px';
+        }
+
+        function mostrarTooltipNode(nodeId, clientX, clientY) {
+            if (tooltipConteudoAtualId !== nodeId) {
+                construirConteudoTooltip(nodeId);
+            }
+            const tooltip = document.getElementById('node-tooltip');
+            if (tooltip) tooltip.style.display = 'block';
+            posicionarTooltip(clientX, clientY);
+        }
+
+        function esconderTooltipNode() {
+            const tooltip = document.getElementById('node-tooltip');
+            if (tooltip) tooltip.style.display = 'none';
+            tooltipConteudoAtualId = null;
+        }
+
+        function updateAdaptiveLOD() {
+            if (!isAdaptive || !network) return;
+            const scale = network.getScale();
+            if (!scale || scale <= 0.002) return;
+
+            if (scale < 0.25) {
+                const screenTargetRadius = 5.5;
+                const dynamicDotSize = Math.max(12, Math.min(65, Math.round(screenTargetRadius / scale)));
+                const hubDotSize = Math.round(dynamicDotSize * 1.6);
+
+                isLodSimplified = true;
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const isHub = (n.id === masterHubId);
+                    updates.push({
+                        id: n.id,
+                        shape: "dot",
+                        size: isHub ? hubDotSize : dynamicDotSize,
+                        label: ""
+                    });
+                });
+                nodesDataSet.update(updates);
+                return;
+            } else if (scale >= 0.25 && isLodSimplified) {
+                isLodSimplified = false;
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const orig = nodeIndexMap.get(n.id);
+                    if (!orig) return;
+                    updates.push({
+                        id: n.id,
+                        shape: orig.shape || (orig.image ? "image" : "dot"),
+                        image: orig.image,
+                        size: orig.size || 20,
+                        label: orig.label
+                    });
+                });
+                nodesDataSet.update(updates);
+            }
+
+            if (!isLodSimplified) {
+                const targetSize = Math.max(9, Math.min(20, Math.round(baseFontSize / Math.sqrt(scale))));
+                const updates = [];
+                nodesDataSet.forEach(n => {
+                    const orig = nodeIndexMap.get(n.id);
+                    updates.push({
+                        id: n.id,
+                        font: {
+                            size: targetSize,
+                            color: "#EDEDED",
+                            face: "Segoe UI",
+                            background: orig && orig.font ? orig.font.background : undefined,
+                            strokeWidth: 0
+                        }
+                    });
+                });
+                nodesDataSet.update(updates);
+            }
+        }
+
+        function desenharMinimapa() {
+            const canvas = document.getElementById('minimap-canvas');
+            if (!canvas || !network) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const positions = network.getPositions();
+            const ids = Object.keys(positions);
+            if (ids.length === 0) return;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            ids.forEach(id => {
+                const p = positions[id];
+                if (p) {
+                    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+                }
+            });
+
+            const k = network.getScale() || 1;
+            const canvasEl = container.querySelector('canvas');
+            const canvasWidth = canvasEl ? canvasEl.clientWidth : container.clientWidth;
+            const canvasHeight = canvasEl ? canvasEl.clientHeight : container.clientHeight;
+
+            const invScale = 1 / k;
+            const viewportWidth = canvasWidth * invScale;
+            const viewportHeight = canvasHeight * invScale;
+
+            let centerX = 0, centerY = 0;
+            try {
+                const vp = network.getViewPosition();
+                centerX = vp.x; centerY = vp.y;
+            } catch (e) {}
+
+            const viewportX1 = centerX - viewportWidth / 2;
+            const viewportY1 = centerY - viewportHeight / 2;
+            const viewportX2 = centerX + viewportWidth / 2;
+            const viewportY2 = centerY + viewportHeight / 2;
+
+            const worldMinX = Math.min(minX, viewportX1);
+            const worldMinY = Math.min(minY, viewportY1);
+            const worldMaxX = Math.max(maxX, viewportX2);
+            const worldMaxY = Math.max(maxY, viewportY2);
+
+            const worldWidth = worldMaxX - worldMinX || 1;
+            const worldHeight = worldMaxY - worldMinY || 1;
+
+            const width = canvas.width;
+            const height = canvas.height;
+            const scaleX = width / worldWidth;
+            const scaleY = height / worldHeight;
+            const scale = Math.min(scaleX, scaleY) * 0.9;
+
+            const offsetX = (width - worldWidth * scale) / 2;
+            const offsetY = (height - worldHeight * scale) / 2;
+
+            const project = (x, y) => [
+                (x - worldMinX) * scale + offsetX,
+                (y - worldMinY) * scale + offsetY
+            ];
+
+            ids.forEach(id => {
+                const p = positions[id];
+                if (!p) return;
+                const [cx, cy] = project(p.x, p.y);
+                const nodeObj = nodeIndexMap.get(id);
+                ctx.beginPath();
+                ctx.arc(cx, cy, (id === masterHubId ? 2.5 : 1.5), 0, 2 * Math.PI);
+                ctx.fillStyle = (id === masterHubId) ? "#FF7300" : (nodeObj && nodeObj.color ? (nodeObj.color.background || nodeObj.color) : "#8A8D99");
+                ctx.fill();
+            });
+
+            const [vx1, vy1] = project(viewportX1, viewportY1);
+            const [vx2, vy2] = project(viewportX2, viewportY2);
+            const rectWidth = Math.abs(vx2 - vx1);
+            const rectHeight = Math.abs(vy2 - vy1);
+            const rectX = Math.min(vx1, vx2);
+            const rectY = Math.min(vy1, vy2);
+
+            ctx.strokeStyle = 'rgba(255, 115, 0, 0.85)';
+            ctx.fillStyle = 'rgba(255, 115, 0, 0.12)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 2);
+            } else {
+                ctx.rect(rectX, rectY, rectWidth, rectHeight);
+            }
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        function toggleTheme() {
+            const atual = document.body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            document.body.setAttribute('data-theme', atual);
+            temaAtualBg = (atual === 'dark' ? '#121214' : '#FCFCFC');
+            document.getElementById('btn-dock-theme').classList.toggle('active', atual === 'light');
+            if (network) {
+                updateAdaptiveLOD();
+                network.redraw();
+            }
+        }
+
+        function reportarAlturaReal() {
+            let topOffset = 0;
+            try {
+                const rect = window.frameElement.getBoundingClientRect();
+                topOffset = rect.top;
+            } catch (e) {
+                topOffset = 0;
+            }
+            const margemInferior = 12;
+            const alturaJanelaPai = (window.parent && window.parent.innerHeight) ? window.parent.innerHeight : window.innerHeight;
+            const alturaDisponivel = Math.max(400, alturaJanelaPai - topOffset - margemInferior);
+            setFrameHeightStreamlit(alturaDisponivel);
+        }
+        window.addEventListener('resize', reportarAlturaReal);
+
+        function toggleFilterPopover() { 
+            const p = document.getElementById('filter-popover'); 
+            p.style.display = p.style.display === "none" ? "block" : "none"; 
+        }
+        function toggleSearchPanel() {
+            const p = document.getElementById('search-panel');
+            const v = p.style.display !== "none";
+            p.style.display = v ? "none" : "block";
+            document.getElementById('rail-search').classList.toggle('active', !v);
+        }
+        function toggleExportMenu() { const m = document.getElementById('export-menu'); m.style.display = m.style.display === "none" ? "flex" : "none"; }
+
+        function exportJSON() {
+            toggleExportMenu();
+            const alvo = selectedNodesQueue.length > 1
+                ? { nodes: rawNodes.filter(n => selectedNodesQueue.includes(n.id)), edges: rawEdges.filter(e => selectedNodesQueue.includes(e.from) && selectedNodesQueue.includes(e.to)) }
+                : { nodes: rawNodes, edges: rawEdges };
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(alvo, null, 2));
+            const a = document.createElement('a');
+            a.href = dataStr; a.download = `investigacao_${masterHubId || 'lcfo'}.json`; a.click();
+        }
+        function exportPNG() {
+            toggleExportMenu();
+            const canvas = container.querySelector('canvas');
+            const a = document.createElement('a');
+            a.download = `evidencia_${masterHubId || 'lcfo'}.png`; a.href = canvas.toDataURL('image/png'); a.click();
+        }
+
+        function exportHTML() {
+            toggleExportMenu();
+            const currentPositions = network ? network.getPositions() : {};
+            const nodesCopy = rawNodes.map(n => {
+                const p = currentPositions[n.id];
+                return p ? { ...n, x: Math.round(p.x), y: Math.round(p.y) } : { ...n };
+            });
+
+            const payload = {
+                nodes: nodesCopy,
+                edges: rawEdges,
+                hub_id: masterHubId,
+                layout_ativo: currentLayoutMode || "organico",
+                base_font_size: baseFontSize
+            };
+
+            let fullHtml = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+            fullHtml = fullHtml.replace(/<script id="standalone-data">[\s\S]*?<\/script>/gi, '');
+
+            const injectScript = `
+            <script id="standalone-data">
+            (function() {
+                const standalonePayload = ${JSON.stringify(payload)};
+                window.addEventListener('DOMContentLoaded', function() {
+                    setTimeout(function() {
+                        inicializarOuAtualizarRede(standalonePayload);
+                    }, 100);
+                });
+            })();
+            <\/script>`;
+
+            fullHtml = fullHtml.replace('</body>', injectScript + '\n</body>');
+
+            const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `dossie_forense_${masterHubId || 'lcfo'}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function resetarOuRecalcularLayout() {
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.style.display = 'flex';
+            sendValueToStreamlit({ tipo: "reset_layout_request", ts: Date.now() });
+            setTimeout(() => { if (overlay) overlay.style.display = 'none'; }, 600);
+        }
+        function zoomIn() { if (network) network.moveTo({ scale: network.getScale() * 1.25, animation: { duration: 250 } }); }
+        function zoomOut() { if (network) network.moveTo({ scale: network.getScale() * 0.8, animation: { duration: 250 } }); }
+        function fitView() { if (network) network.fit({ animation: { duration: 350 }, padding: 60 }); }
+
+        // Tipos de entidade (chave, rótulo, cor) vindos do registro do Python em payload.tipos.
+        let tiposPayload = [];
+        const tiposOcultos = new Set();
+
+        /** Uma linha por tipo PRESENTE no grafo, com a cor e a contagem (serve também de legenda). */
+        function montarFiltrosTipo() {
+            const caixa = document.getElementById('filtros-tipo');
+            if (!caixa) return;
+            const contagem = {};
+            rawNodes.forEach(n => { contagem[n.tipo] = (contagem[n.tipo] || 0) + 1; });
+            const conhecidos = new Set(tiposPayload.map(t => t.chave));
+            const lista = tiposPayload.concat(Object.keys(contagem).filter(k => !conhecidos.has(k))
+                .map(k => ({ chave: k, rotulo: k, cor: { bg: '#4A4A4A' } })));
+            caixa.innerHTML = '';
+            const flags = {};
+            rawNodes.forEach(n => { if (n.flag) flags[n.flag] = (flags[n.flag] || 0) + 1; });
+            lista.filter(t => contagem[t.chave]).forEach(t => {
+                const linha = document.createElement('label'); linha.className = 'filter-row';
+                const cb = document.createElement('input'); cb.type = 'checkbox'; cb.dataset.tipo = t.chave;
+                cb.checked = !tiposOcultos.has(t.chave); cb.onchange = aplicarFiltroTipo;
+                const cor = document.createElement('span'); cor.className = 'flt-cor'; cor.style.background = (t.cor && t.cor.bg) || '#4A4A4A';
+                const rot = document.createElement('span'); rot.textContent = t.rotulo;
+                const qtd = document.createElement('span'); qtd.className = 'flt-qtd'; qtd.textContent = contagem[t.chave];
+                linha.append(cb, cor, rot, qtd); caixa.appendChild(linha);
+            });
+            if (Object.keys(flags).length) {                  // legenda das flags presentes (com o significado no sketch)
+                const tit = document.createElement('div'); tit.className = 'filter-popover-title'; tit.style.marginTop = '8px'; tit.textContent = 'Flags';
+                caixa.appendChild(tit);
+                Object.entries(flags).forEach(([f, q]) => {
+                    const l = document.createElement('div'); l.className = 'filter-row';
+                    l.innerHTML = `<span class="flt-cor" style="background:${FLAG_CORES[f] || '#888'}"></span><span></span><span class="flt-qtd">${q}</span>`;
+                    l.children[1].textContent = rotulosFlags[f] || f;
+                    caixa.appendChild(l);
+                });
+            }
+        }
+
+        function aplicarFiltroTipo() {
+            document.querySelectorAll('#filtros-tipo input[data-tipo]').forEach(cb => {
+                if (cb.checked) tiposOcultos.delete(cb.dataset.tipo); else tiposOcultos.add(cb.dataset.tipo);
+            });
+            aplicarFiltros();
+        }
+
+        // ---------------------------------------------------------------- filtros por regra (item 12)
+        let camposFiltraveis = [], operadoresFiltro = {}, filtrosSalvos = [];
+        let filtroRegras = { combinacao: 'todas', modo: 'ocultar', regras: [] };
+        let timerFiltro = null, metricasNo = null;
+
+        function campoDef(c) { return camposFiltraveis.find(x => x.campo === c) || { campo: c, tipo: 'texto', rotulo: c }; }
+
+        /** Métricas por nó vindas das arestas (grau, vínculos, ocorrências, primeira/última data). */
+        function calcularMetricas() {
+            const m = new Map();
+            rawNodes.forEach(n => m.set(n.id, { grau: new Set(), vinculos: 0, ocorrencias: 0, primeira: null, ultima: null }));
+            rawEdges.forEach(e => {
+                [[e.from, e.to], [e.to, e.from]].forEach(([a, b]) => {
+                    const x = m.get(a); if (!x) return;
+                    x.grau.add(b); x.vinculos += 1; x.ocorrencias += (e.ocorrencias || 1);
+                    (e.datas || []).forEach(d => { if (!x.primeira || d < x.primeira) x.primeira = d; if (!x.ultima || d > x.ultima) x.ultima = d; });
+                });
+            });
+            return m;
+        }
+
+        function valorCampo(n, campo) {
+            const mt = metricasNo.get(n.id) || {};
+            switch (campo) {
+                case 'tipo': return n.tipo || '';
+                case 'rotulo': return n.label || '';
+                case 'origem': return n.origem || 'oficial';
+                case 'flag': return n.flag || '';
+                case 'grau': return mt.grau ? mt.grau.size : (n.degree || 0);
+                case 'vinculos': return mt.vinculos || 0;
+                case 'intermediacao': return n.betweenness || 0;
+                case 'comunidade': return n.community ?? 0;
+                case 'ocorrencias': return mt.ocorrencias || 0;
+                case 'primeira_data': return mt.primeira || '';
+                case 'ultima_data': return mt.ultima || '';
+                case 'execucao': return n.id_execucao || '';
+                default: return n[campo] ?? '';
+            }
+        }
+
+        const semAcento = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+        function avaliar(n, r) {
+            const v = valorCampo(n, r.campo), alvo = r.valor;
+            switch (r.operador) {
+                case 'é': return semAcento(v) === semAcento(alvo);
+                case 'não é': return semAcento(v) !== semAcento(alvo);
+                case 'contém': return semAcento(v).includes(semAcento(alvo));
+                case 'começa com': return semAcento(v).startsWith(semAcento(alvo));
+                case 'vazio': return v === '' || v === null || v === undefined;
+                case 'preenchido': return !(v === '' || v === null || v === undefined);
+                case '=': return Number(v) === Number(alvo);
+                case '≠': return Number(v) !== Number(alvo);
+                case '>': return Number(v) > Number(alvo);
+                case '≥': return Number(v) >= Number(alvo);
+                case '<': return Number(v) < Number(alvo);
+                case '≤': return Number(v) <= Number(alvo);
+                case 'entre': {
+                    const [a, b] = Array.isArray(alvo) ? alvo : [];
+                    if (campoDef(r.campo).tipo === 'data') return !!v && (!a || v >= a) && (!b || v <= b);
+                    return (a === '' || a === undefined || Number(v) >= Number(a)) && (b === '' || b === undefined || Number(v) <= Number(b));
+                }
+                case 'antes': return !!v && !!alvo && v < alvo;
+                case 'depois': return !!v && !!alvo && v > alvo;
+                case 'é um de': return Array.isArray(alvo) && alvo.length ? alvo.includes(v) : true;
+            }
+            return true;
+        }
+
+        function regraCompleta(r) {
+            if (['vazio', 'preenchido'].includes(r.operador)) return true;
+            if (r.operador === 'entre') return Array.isArray(r.valor) && (r.valor[0] !== '' || r.valor[1] !== '');
+            if (r.operador === 'é um de') return Array.isArray(r.valor) && r.valor.length > 0;
+            return r.valor !== '' && r.valor !== undefined && r.valor !== null;
+        }
+
+        /** Avaliador único: tipo (regra embutida) + regras + modo. Aplica em lote. */
+        function aplicarFiltros() {
+            if (!rawNodes.length) return;
+            metricasNo = calcularMetricas();
+            const ativas = filtroRegras.regras.filter(regraCompleta);
+            const casa = n => !ativas.length || (filtroRegras.combinacao === 'qualquer' ? ativas.some(r => avaliar(n, r)) : ativas.every(r => avaliar(n, r)));
+            const updates = [];
+            let mostrando = 0;
+            rawNodes.forEach(n => {
+                const tipoOk = !tiposOcultos.has(n.tipo), ok = casa(n);
+                if (filtroRegras.modo === 'destacar') {
+                    updates.push({ id: n.id, hidden: !tipoOk, opacity: ok ? 1 : 0.12 });
+                    if (tipoOk) mostrando += ok ? 1 : 0;
+                } else {
+                    updates.push({ id: n.id, hidden: !(tipoOk && ok), opacity: 1 });
+                    if (tipoOk && ok) mostrando += 1;
+                }
+            });
+            nodesDataSet.update(updates);                     // aresta some sozinha quando uma ponta está oculta
+            const c = document.getElementById('contador-filtro');
+            if (c) c.textContent = `${filtroRegras.modo === 'destacar' ? 'destacando' : 'mostrando'} ${mostrando.toLocaleString('pt-BR')} de ${rawNodes.length.toLocaleString('pt-BR')}`;
+            desenharChipsFiltro(ativas);
+        }
+        function agendarFiltros() { clearTimeout(timerFiltro); timerFiltro = setTimeout(aplicarFiltros, 120); }
+
+        function textoRegra(r) {
+            const d = campoDef(r.campo);
+            let v = r.valor;
+            if (Array.isArray(v)) v = r.operador === 'entre' ? `${v[0] || '…'} e ${v[1] || '…'}` : v.map(x => (d.opcoes || []).find(o => o.valor === x)?.rotulo || x).join(', ');
+            return `${d.rotulo.toLowerCase()} ${r.operador}${['vazio', 'preenchido'].includes(r.operador) ? '' : ' ' + v}`;
+        }
+        function desenharChipsFiltro(ativas) {
+            const caixa = document.getElementById('chips-filtro'); if (!caixa) return;
+            caixa.innerHTML = '';
+            ativas.forEach(r => {
+                const s = document.createElement('span'); s.textContent = textoRegra(r);
+                const b = document.createElement('button'); b.textContent = '×'; b.title = 'Remover regra';
+                b.onclick = () => { filtroRegras.regras = filtroRegras.regras.filter(x => x !== r); montarRegras(); aplicarFiltros(); };
+                s.appendChild(b); caixa.appendChild(s);
+            });
+            if (ativas.length) {
+                const s = document.createElement('span'); s.textContent = 'Limpar';
+                s.style.cursor = 'pointer'; s.style.paddingRight = '9px'; s.onclick = limparRegras; caixa.appendChild(s);
+            }
+            caixa.style.display = ativas.length ? 'flex' : 'none';
+        }
+
+        function montarRegras() {
+            const caixa = document.getElementById('regras-filtro'); if (!caixa) return;
+            caixa.innerHTML = '';
+            filtroRegras.regras.forEach(r => {
+                const d = campoDef(r.campo), ops = operadoresFiltro[d.tipo] || [];
+                const linha = document.createElement('div'); linha.className = 'regra-linha';
+                const sc = document.createElement('select');
+                camposFiltraveis.forEach(c => { const o = document.createElement('option'); o.value = c.campo; o.textContent = c.rotulo; sc.appendChild(o); });
+                sc.value = r.campo;
+                sc.onchange = () => { r.campo = sc.value; r.operador = (operadoresFiltro[campoDef(r.campo).tipo] || [''])[0]; r.valor = valorInicial(r); montarRegras(); agendarFiltros(); };
+                const so = document.createElement('select');
+                ops.forEach(op => { const o = document.createElement('option'); o.value = op; o.textContent = op; so.appendChild(o); });
+                so.value = r.operador;
+                so.onchange = () => { r.operador = so.value; r.valor = valorInicial(r); montarRegras(); agendarFiltros(); };
+                const rm = document.createElement('button'); rm.className = 'regra-remover'; rm.textContent = '×';
+                rm.onclick = () => { filtroRegras.regras = filtroRegras.regras.filter(x => x !== r); montarRegras(); agendarFiltros(); };
+                linha.append(sc, so, rm);
+                const val = document.createElement('div'); val.className = 'regra-valor';
+                const tipoInput = d.tipo === 'numero' ? 'number' : d.tipo === 'data' ? 'date' : 'text';
+                if (['vazio', 'preenchido'].includes(r.operador)) {
+                } else if (r.operador === 'entre') {
+                    [0, 1].forEach(i => { const inp = document.createElement('input'); inp.type = tipoInput; inp.value = (r.valor || ['', ''])[i] || '';
+                        inp.oninput = () => { r.valor = [...(r.valor || ['', ''])]; r.valor[i] = inp.value; agendarFiltros(); }; val.appendChild(inp); });
+                } else if (r.operador === 'é um de') {
+                    const sm = document.createElement('select'); sm.multiple = true;
+                    (d.opcoes || []).forEach(op => { const o = document.createElement('option'); o.value = op.valor; o.textContent = op.rotulo;
+                        o.selected = (r.valor || []).includes(op.valor); sm.appendChild(o); });
+                    sm.onchange = () => { r.valor = [...sm.selectedOptions].map(o => o.value); agendarFiltros(); };
+                    val.appendChild(sm);
+                } else {
+                    const inp = document.createElement('input'); inp.type = tipoInput; inp.value = r.valor ?? '';
+                    inp.oninput = () => { r.valor = inp.value; agendarFiltros(); }; val.appendChild(inp);
+                }
+                linha.appendChild(val);
+                caixa.appendChild(linha);
+            });
+            document.getElementById('comb-todas').classList.toggle('ativo', filtroRegras.combinacao === 'todas');
+            document.getElementById('comb-qualquer').classList.toggle('ativo', filtroRegras.combinacao === 'qualquer');
+            document.getElementById('modo-ocultar').classList.toggle('ativo', filtroRegras.modo === 'ocultar');
+            document.getElementById('modo-destacar').classList.toggle('ativo', filtroRegras.modo === 'destacar');
+        }
+        function valorInicial(r) { return r.operador === 'entre' ? ['', ''] : r.operador === 'é um de' ? [] : ''; }
+        function adicionarRegra() {
+            const c = camposFiltraveis.find(x => x.campo === 'grau') || camposFiltraveis[0]; if (!c) return;
+            const r = { campo: c.campo, operador: (operadoresFiltro[c.tipo] || [''])[0] };
+            r.valor = valorInicial(r);
+            filtroRegras.regras.push(r); montarRegras();
+        }
+        function definirCombinacao(c) { filtroRegras.combinacao = c; montarRegras(); aplicarFiltros(); }
+        function definirModoFiltro(m) { filtroRegras.modo = m; montarRegras(); aplicarFiltros(); }
+        function limparRegras() { filtroRegras.regras = []; montarRegras(); aplicarFiltros(); }
+        function aplicarFiltroSalvo(f) {
+            filtroRegras = JSON.parse(JSON.stringify({ combinacao: f.combinacao || 'todas', modo: f.modo || 'ocultar', regras: f.regras || [] }));
+            montarRegras(); aplicarFiltros();
+        }
+        function salvarFiltroAtual() {
+            const nome = (document.getElementById('nome-filtro').value || '').trim() || 'Filtro';
+            if (!filtroRegras.regras.filter(regraCompleta).length) return;
+            sendValueToStreamlit({ tipo: "filter_save", nome, filtro: { ...filtroRegras, regras: filtroRegras.regras.filter(regraCompleta) }, ts: Date.now() });
+            document.getElementById('nome-filtro').value = '';
+        }
+        function montarFiltrosSalvos() {
+            const caixa = document.getElementById('filtros-salvos'); if (!caixa) return;
+            caixa.innerHTML = filtrosSalvos.length ? '' : '<div class="contador-filtro">Nenhum filtro salvo neste sketch.</div>';
+            filtrosSalvos.forEach(f => {
+                const it = document.createElement('div'); it.className = 'item';
+                const nome = document.createElement('span'); nome.textContent = f.nome; it.appendChild(nome);
+                it.onclick = () => aplicarFiltroSalvo(f.filtro);
+                const rm = document.createElement('button'); rm.textContent = '×'; rm.title = 'Excluir filtro salvo';
+                rm.onclick = ev => { ev.stopPropagation(); sendValueToStreamlit({ tipo: "filter_delete", id: f.id, ts: Date.now() }); };
+                it.appendChild(rm); caixa.appendChild(it);
+            });
+        }
+
+        function dispararEnrich() {
+            if (!currentInspectedNodeId) return;
+            const nodeObj = nodeIndexMap.get(currentInspectedNodeId);
+            if (!nodeObj) return;
+            sendValueToStreamlit({ tipo: "enrich_request", nodeId: currentInspectedNodeId, tipoEntidade: nodeObj.tipo, valor: nodeObj.valor });
+        }
+
+        function aplicarDestaqueArestasPorNos(nodeIdSet, corForcada) {
+            const updates = [];
+            edgeOriginalStyleMap.forEach((orig, edgeId) => {
+                const edgeAtual = edgesDataSet.get(edgeId);
+                if (!edgeAtual) return;
+
+                if (!nodeIdSet) {
+                    updates.push({
+                        id: edgeId,
+                        color: { ...orig.colorObj, opacity: orig.colorObj.opacity ?? 0.80 },
+                        width: orig.width
+                    });
+                    return;
+                }
+
+                const pertenceAoDestaque = nodeIdSet.has(edgeAtual.from) && nodeIdSet.has(edgeAtual.to);
+                if (pertenceAoDestaque) {
+                    updates.push({
+                        id: edgeId,
+                        color: corForcada
+                            ? { ...orig.colorObj, color: corForcada, opacity: 1.0 }
+                            : { ...orig.colorObj, opacity: 0.95 },
+                        width: Math.min(6, orig.width * 1.35)
+                    });
+                } else {
+                    updates.push({
+                        id: edgeId,
+                        color: { ...orig.colorObj, color: EDGE_COLOR_DIMMED, opacity: 0.45 },
+                        width: Math.max(0.4, orig.width / 5)
+                    });
+                }
+            });
+            if (updates.length > 0) edgesDataSet.update(updates);
+        }
+
+        function applyHighlight(selectedId) {
+            currentHighlightId = selectedId;
+            pathHighlightActive = false;
+            edgeHighlightActive = false;
+            if (!network) return;
+            if (selectedId && nodesDataSet.get(selectedId)) {
+                const connected = network.getConnectedNodes(selectedId); connected.push(selectedId);
+                const updates = [];
+                nodesDataSet.forEach(node => updates.push({ id: node.id, opacity: connected.includes(node.id) ? 1.0 : 0.12, borderWidth: (node.id === selectedId ? 3.5 : 1.2) }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(new Set(connected));
+            } else {
+                const updates = [];
+                nodesDataSet.forEach(node => updates.push({ id: node.id, opacity: 1.0, borderWidth: (node.id === masterHubId ? 3.5 : 1.2) }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(null);
+            }
+        }
+
+        function sincronizarSelecaoComPython() {
+            sendValueToStreamlit({ tipo: "sync_selection_from_canvas", ids: [...selectedNodesQueue], ts: Date.now() });
+        }
+
+        function limparSelecaoMultipla() {
+            selectedNodesQueue = [];
+            selecaoMultiplaDeliberada = false;
+            atualizarBadgeFindPath();
+            applyHighlight(null);
+            closeDrawer();
+            sincronizarSelecaoComPython();
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+                e.preventDefault();
+                selectedNodesQueue = [];
+                nodesDataSet.forEach(n => { if (!n.hidden) selectedNodesQueue.push(n.id); });
+                selecaoMultiplaDeliberada = selectedNodesQueue.length > 0;
+                atualizarBadgeFindPath();
+                const updates = selectedNodesQueue.map(id => ({ id, borderWidth: 3.5 }));
+                nodesDataSet.update(updates);
+                sincronizarSelecaoComPython();
+            }
+            if (e.key === 'Escape' && vizinhancaIsoladaAtiva) {
+                restaurarVisaoCompleta();
+            }
+        });
+
+        let selectHoldEstadoAnterior = null;
+        document.addEventListener('keydown', function(e) {
+            if (e.key.toLowerCase() !== 's' || e.repeat) return;
+            const ativoEl = document.activeElement;
+            const estaDigitando = ativoEl && (ativoEl.tagName === 'INPUT' || ativoEl.tagName === 'TEXTAREA' || ativoEl.isContentEditable);
+            if (estaDigitando || selectHoldEstadoAnterior !== null) return;
+            selectHoldEstadoAnterior = modoSelecaoAtivo || modoLassoAtivo;
+            if (!selectHoldEstadoAnterior) toggleModoSelecaoPrincipal();
+        });
+        document.addEventListener('keyup', function(e) {
+            if (e.key.toLowerCase() !== 's') return;
+            if (selectHoldEstadoAnterior === false) toggleModoSelecaoPrincipal();
+            selectHoldEstadoAnterior = null;
+        });
+
+        function atualizarVisualBotaoSelecaoPrincipal() {
+            const ativo = modoSelecaoAtivo || modoLassoAtivo;
+            const btn = document.getElementById('rail-select-main');
+            if (btn) btn.classList.toggle('active', ativo);
+        }
+
+        function toggleModoSelecaoPrincipal() {
+            if (submodoSelecao === 'lasso') toggleModoLasso();
+            else toggleModoSelecao();
+        }
+
+        function toggleSelecaoSubmenu(e) {
+            e.stopPropagation();
+            const m = document.getElementById('selecao-submenu');
+            const abrir = !m.style.display || m.style.display === 'none';
+            m.style.display = abrir ? 'flex' : 'none';
+        }
+
+        function definirSubmodoSelecao(modo) {
+            submodoSelecao = modo;
+            document.querySelectorAll('.selecao-submenu-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.mode === modo);
+            });
+            document.getElementById('selecao-submenu').style.display = 'none';
+
+            const estavaAtivo = modoSelecaoAtivo || modoLassoAtivo;
+            if (estavaAtivo) {
+                modoSelecaoAtivo = false;
+                modoLassoAtivo = false;
+                if (modo === 'rectangle') { modoSelecaoAtivo = true; } else { modoLassoAtivo = true; }
+                atualizarVisualBotaoSelecaoPrincipal();
+                document.getElementById('selection-banner-text').innerText = (modo === 'rectangle') ? 'Seleção retangular ativa' : 'Seleção por laço ativa';
+                document.getElementById('selection-banner').style.display = 'flex';
+                atualizarInteracaoModoSelecao();
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.rail-select-group')) {
+                const sm = document.getElementById('selecao-submenu');
+                if (sm) sm.style.display = 'none';
+            }
+        });
+
+        function atualizarInteracaoModoSelecao() {
+            const algumModoAtivo = modoSelecaoAtivo || modoLassoAtivo;
+            container.style.cursor = algumModoAtivo ? 'crosshair' : 'default';
+            if (network) {
+                network.setOptions({
+                    interaction: {
+                        dragView: !algumModoAtivo,
+                        dragNodes: !algumModoAtivo,
+                        zoomView: true,
+                        hover: true,
+                        tooltipDelay: 100
+                    }
+                });
+            }
+        }
+
+        function toggleModoSelecao() {
+            modoSelecaoAtivo = !modoSelecaoAtivo;
+            if (modoSelecaoAtivo) modoLassoAtivo = false;
+            atualizarVisualBotaoSelecaoPrincipal();
+            document.getElementById('selection-banner-text').innerText = 'Seleção retangular ativa';
+            document.getElementById('selection-banner').style.display = modoSelecaoAtivo ? 'flex' : 'none';
+            atualizarInteracaoModoSelecao();
+        }
+
+        function toggleModoLasso() {
+            modoLassoAtivo = !modoLassoAtivo;
+            if (modoLassoAtivo) modoSelecaoAtivo = false;
+            atualizarVisualBotaoSelecaoPrincipal();
+            document.getElementById('selection-banner-text').innerText = 'Seleção por laço ativa';
+            document.getElementById('selection-banner').style.display = modoLassoAtivo ? 'flex' : 'none';
+            atualizarInteracaoModoSelecao();
+        }
+
+        let selRectStart = null;
+        container.addEventListener('mousedown', function(e) {
+            if (!modoSelecaoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            selRectStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            const el = document.getElementById('select-rect');
+            el.style.display = 'block'; el.style.left = selRectStart.x + 'px'; el.style.top = selRectStart.y + 'px';
+            el.style.width = '0px'; el.style.height = '0px';
+        });
+        container.addEventListener('mousemove', function(e) {
+            if (!modoSelecaoAtivo || !selRectStart) return;
+            const rect = container.getBoundingClientRect();
+            const curX = e.clientX - rect.left, curY = e.clientY - rect.top;
+            const el = document.getElementById('select-rect');
+            el.style.left = Math.min(selRectStart.x, curX) + 'px';
+            el.style.top = Math.min(selRectStart.y, curY) + 'px';
+            el.style.width = Math.abs(curX - selRectStart.x) + 'px';
+            el.style.height = Math.abs(curY - selRectStart.y) + 'px';
+        });
+        container.addEventListener('mouseup', function(e) {
+            if (!modoSelecaoAtivo || !selRectStart) return;
+            const rect = container.getBoundingClientRect();
+            const curX = e.clientX - rect.left, curY = e.clientY - rect.top;
+            const x1 = Math.min(selRectStart.x, curX), x2 = Math.max(selRectStart.x, curX);
+            const y1 = Math.min(selRectStart.y, curY), y2 = Math.max(selRectStart.y, curY);
+            const positions = network.getPositions();
+            const encontrados = [];
+            Object.keys(positions).forEach(id => {
+                const dom = network.canvasToDOM(positions[id]);
+                if (dom.x >= x1 && dom.x <= x2 && dom.y >= y1 && dom.y <= y2) encontrados.push(id);
+            });
+            selectedNodesQueue = encontrados;
+            selecaoMultiplaDeliberada = encontrados.length > 0;
+            atualizarBadgeFindPath();
+            const updates = [];
+            nodesDataSet.forEach(n => updates.push({ id: n.id, borderWidth: encontrados.includes(n.id) ? 3.5 : 1.2 }));
+            nodesDataSet.update(updates);
+            document.getElementById('select-rect').style.display = 'none';
+            selRectStart = null;
+            sincronizarSelecaoComPython();
+        });
+
+        let lassoPontos = [];
+        let lassoAtivo = false;
+
+        function pontoDentroDoPoligono(px, py, pontos) {
+            let dentro = false;
+            for (let i = 0, j = pontos.length - 1; i < pontos.length; j = i++) {
+                const xi = pontos[i][0], yi = pontos[i][1];
+                const xj = pontos[j][0], yj = pontos[j][1];
+                const intersecta = ((yi > py) !== (yj > py)) &&
+                    (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+                if (intersecta) dentro = !dentro;
+            }
+            return dentro;
+        }
+
+        function atualizarPoligonoSvg() {
+            const poly = document.getElementById('lasso-poly');
+            poly.setAttribute('points', lassoPontos.map(p => p.join(',')).join(' '));
+        }
+
+        container.addEventListener('mousedown', function(e) {
+            if (!modoLassoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            lassoAtivo = true;
+            lassoPontos = [[e.clientX - rect.left, e.clientY - rect.top]];
+            const svg = document.getElementById('lasso-svg');
+            svg.style.display = 'block';
+            atualizarPoligonoSvg();
+        });
+        container.addEventListener('mousemove', function(e) {
+            if (!modoLassoAtivo || !lassoAtivo) return;
+            const rect = container.getBoundingClientRect();
+            const px = e.clientX - rect.left, py = e.clientY - rect.top;
+            const ultimo = lassoPontos[lassoPontos.length - 1];
+            if (!ultimo || Math.hypot(px - ultimo[0], py - ultimo[1]) > 4) {
+                lassoPontos.push([px, py]);
+                atualizarPoligonoSvg();
+            }
+        });
+        container.addEventListener('mouseup', function(e) {
+            if (!modoLassoAtivo || !lassoAtivo) return;
+            lassoAtivo = false;
+            document.getElementById('lasso-svg').style.display = 'none';
+
+            if (lassoPontos.length >= 3) {
+                const positions = network.getPositions();
+                const encontrados = [];
+                Object.keys(positions).forEach(id => {
+                    const dom = network.canvasToDOM(positions[id]);
+                    if (pontoDentroDoPoligono(dom.x, dom.y, lassoPontos)) encontrados.push(id);
+                });
+                selectedNodesQueue = encontrados;
+                selecaoMultiplaDeliberada = encontrados.length > 0;
+                atualizarBadgeFindPath();
+                const updates = [];
+                nodesDataSet.forEach(n => updates.push({ id: n.id, borderWidth: encontrados.includes(n.id) ? 3.5 : 1.2 }));
+                nodesDataSet.update(updates);
+                sincronizarSelecaoComPython();
+            }
+            lassoPontos = [];
+        });
+
+        container.addEventListener('mousemove', function(e) {
+            if (hoveredNodeIdTooltip) {
+                mostrarTooltipNode(hoveredNodeIdTooltip, e.clientX, e.clientY);
+            }
+        });
+
+        function atualizarBadgeFindPath() {
+            const badge = document.getElementById('find-path-badge');
+            if (!badge) return;
+            badge.style.display = (selectedNodesQueue.length === 2) ? 'flex' : 'none';
+        }
+
+        // Find Path no worker: menor (todos os mínimos), cronológico (datas não decrescentes) e ponderado.
+        let modoCaminho = 'menor', resultadoCaminho = null, idxCaminho = 0;
+        function trocarModoCaminho(modo) {
+            modoCaminho = modo;
+            document.querySelectorAll('#path-modos button').forEach(b => b.classList.toggle('ativo', b.dataset.modo === modo));
+            if (resultadoCaminho) executarFindPath(resultadoCaminho.inicio, resultadoCaminho.fim);
+        }
+        function navegarCaminho(d) {
+            if (!resultadoCaminho || !resultadoCaminho.caminhos.length) return;
+            idxCaminho = (idxCaminho + d + resultadoCaminho.caminhos.length) % resultadoCaminho.caminhos.length;
+            mostrarCaminho();
+        }
+
+        async function executarFindPath(inicio, fim) {
+            if (!inicio && selectedNodesQueue.length < 2) {
+                alert("Selecione 2 nós no grafo (ou marque 2 na lista de Entities) antes de traçar a rota.");
+                return;
+            }
+            const startNodeId = inicio || selectedNodesQueue[selectedNodesQueue.length - 2];
+            const endNodeId = fim || selectedNodesQueue[selectedNodesQueue.length - 1];
+            const r = await pedirWorker({
+                tipo: 'caminho', modo: modoCaminho, inicio: startNodeId, fim: endNodeId,
+                nos: rawNodes.map(n => ({ id: n.id })),
+                arestas: rawEdges.map(e => [e.from, e.to, e.ocorrencias || 1, (e.datas || []).slice().sort()]),
+            });
+            resultadoCaminho = { ...r, inicio: startNodeId, fim: endNodeId }; idxCaminho = 0;
+            if (!r.caminhos.length) {
+                document.getElementById('path-finder-panel').style.display = 'flex';
+                document.getElementById('path-header-count').innerText = 'Sem caminho';
+                document.getElementById('path-nav').style.display = 'none';
+                document.getElementById('path-body-content').innerHTML = `<div style="font-size:11px; color:var(--text-muted); padding:8px;">${
+                    modoCaminho === 'cronologico' ? 'Nenhum caminho com datas não decrescentes entre os 2 nós.' : 'Nenhum caminho relacional entre os 2 nós.'}</div>`;
+                return;
+            }
+            mostrarCaminho();
+        }
+
+        function mostrarCaminho() {
+            const foundPath = resultadoCaminho.caminhos[idxCaminho];
+            const datas = resultadoCaminho.datas || [];
+            const pathSet = new Set(foundPath);
+            pathHighlightActive = true;
+            currentHighlightId = null;
+            const updates = [];
+            nodesDataSet.forEach(node => updates.push({
+                id: node.id,
+                opacity: pathSet.has(node.id) ? 1.0 : 0.08,
+                borderWidth: pathSet.has(node.id) ? 3.5 : 1.0
+            }));
+            nodesDataSet.update(updates);
+            aplicarDestaqueArestasPorNos(pathSet, '#FF7300');
+
+            const panel = document.getElementById('path-finder-panel');
+            const headerCount = document.getElementById('path-header-count');
+            const bodyContent = document.getElementById('path-body-content');
+            const nav = document.getElementById('path-nav');
+            const k = resultadoCaminho.caminhos.length;
+            nav.style.display = k > 1 ? 'flex' : 'none';
+            document.getElementById('path-nav-txt').textContent = `caminho ${idxCaminho + 1} de ${k}${k >= 20 ? '+' : ''} (mínimos)`;
+            headerCount.innerText = `Path (${foundPath.length} nodes)`;
+            bodyContent.innerHTML = "";
+
+            foundPath.forEach((nid, idx) => {
+                const nObj = nodeIndexMap.get(nid);
+                const cor = nObj && nObj.color ? (nObj.color.background || nObj.color) : '#FF7300';
+                const btn = document.createElement('button');
+                btn.className = 'path-node-btn';
+                btn.onclick = () => network.focus(nid, { scale: 1.2, animation: { duration: 350 } });
+                btn.innerHTML = `
+                    <div style="width:8px; height:8px; border-radius:50%; background:${cor}; shrink:0;"></div>
+                    <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">
+                        <span style="font-weight:600;">${nObj ? nObj.label : nid}</span>
+                        <span style="font-size:9px; color:var(--text-muted); margin-left:4px;">(${nObj ? nObj.tipo : ''})</span>
+                    </div>
+                `;
+                bodyContent.appendChild(btn);
+                if (idx < foundPath.length - 1) {
+                    const nextId = foundPath[idx + 1];
+                    const edgeObj = rawEdges.find(e => (e.from === nid && e.to === nextId) || (e.from === nextId && e.to === nid));
+                    let edgeLabel = edgeObj ? (edgeObj.label || edgeObj.rotulo || edgeObj.title || 'Vínculo') : 'Vínculo';
+                    if (modoCaminho === 'cronologico' && datas[idx]) edgeLabel = `${datas[idx]} · ${edgeLabel}`;
+                    const line = document.createElement('div');
+                    line.className = 'path-edge-line';
+                    line.innerHTML = `<span style="border-left:1px solid var(--border); height:12px; margin-right:4px;"></span> &darr; ${edgeLabel}`;
+                    bodyContent.appendChild(line);
+                }
+            });
+            panel.style.display = 'flex';
+            network.fit({ nodes: foundPath, animation: { duration: 350 }, padding: 80 });
+        }
+
+        function fecharPathPanel() {
+            document.getElementById('path-finder-panel').style.display = 'none';
+            pathHighlightActive = false;
+            selectedNodesQueue = [];
+            selecaoMultiplaDeliberada = false;
+            atualizarBadgeFindPath();
+            applyHighlight(null);
+            sincronizarSelecaoComPython();
+        }
+
+        function filtrarListaBusca(termo) {
+            const resultsEl = document.getElementById('search-results'), clearBtn = document.getElementById('search-clear-btn');
+            if (!termo || termo.trim().length < 2) { resultsEl.style.display = "none"; resultsEl.innerHTML = ""; clearBtn.style.display = "none"; return; }
+            clearBtn.style.display = "block";
+            const termoClean = termo.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+            const encontrados = rawNodes.filter(n => {
+                const vClean = (n.valor || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                const lClean = (n.label || "").replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                return vClean.includes(termoClean) || lClean.includes(termoClean);
+            }).slice(0, 25);
+            resultsEl.innerHTML = encontrados.length === 0
+                ? "<div style='color:var(--text-muted); font-size:11px; padding:4px;'>Nenhum registro localizado.</div>"
+                : "";
+            encontrados.forEach(n => {
+                const item = document.createElement('div');
+                item.className = 'search-result-item'; item.innerText = n.label;
+                item.onclick = function() { selectInspectedNode(n.id); };
+                resultsEl.appendChild(item);
+            });
+            resultsEl.style.display = "flex";
+        }
+        function limparBuscaGrafo() { document.getElementById('search-input').value = ""; filtrarListaBusca(""); }
+
+        function ocultarTodosMenusContexto() {
+            ['ctx-node-menu', 'ctx-edge-menu', 'ctx-bg-menu'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+        }
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.flowsint-ctx-menu')) ocultarTodosMenusContexto();
+        });
+
+        function calcularPosicaoSeguraMenu(el, domX, domY, displayMode) {
+            el.style.display = displayMode || 'block';
+            const menuWidth = el.offsetWidth || 210;
+            const menuHeight = el.offsetHeight || 160;
+            const bounds = container.getBoundingClientRect();
+            let posX = domX + 6;
+            let posY = domY + 6;
+            if (posX + menuWidth > bounds.width - 10) posX = domX - menuWidth - 6;
+            if (posY + menuHeight > bounds.height - 10) posY = domY - menuHeight - 6;
+            el.style.left = Math.max(8, posX) + 'px';
+            el.style.top = Math.max(8, posY) + 'px';
+        }
+
+        function handleContextMenu(params) {
+            params.event.preventDefault();
+            ocultarTodosMenusContexto();
+            const domX = params.pointer.DOM.x;
+            const domY = params.pointer.DOM.y;
+
+            const clickedNodeId = network.getNodeAt(params.pointer.DOM);
+            const clickedEdgeId = !clickedNodeId ? network.getEdgeAt(params.pointer.DOM) : null;
+
+            if (clickedNodeId) {
+                contextMenuNodeId = clickedNodeId;
+                contextMenuEdgeId = null;
+                const nodeObj = nodeIndexMap.get(clickedNodeId);
+                document.getElementById('ctx-node-label').innerText = nodeObj?.label || clickedNodeId;
+                const badgeEl = document.getElementById('ctx-node-type');
+                badgeEl.innerText = (nodeObj?.tipo || 'Entidade').toUpperCase();
+                const corBadge = nodeObj?.color ? (nodeObj.color.border || nodeObj.color.background || nodeObj.color) : '#FF7300';
+                badgeEl.style.background = corBadge + '26';
+                badgeEl.style.color = corBadge;
+                badgeEl.style.border = '1px solid ' + corBadge + '55';
+                const doAnalista = !!(nodeObj && nodeObj.origem);
+                document.getElementById('ctx-remover-no').style.display = doAnalista ? '' : 'none';
+                document.getElementById('ctx-isolar-no').style.display = doAnalista ? 'none' : '';
+                montarMenuPivos(nodeObj);
+                document.getElementById('ctx-fixar-txt').textContent = (nodeObj && nodeObj.fixado) ? 'Soltar posição' : 'Fixar posição';
+                calcularPosicaoSeguraMenu(document.getElementById('ctx-node-menu'), domX, domY, 'block');
+                return;
+            }
+
+            if (clickedEdgeId) {
+                contextMenuEdgeId = clickedEdgeId;
+                contextMenuNodeId = null;
+                const edgeObj = rawEdges.find(e => e.id === clickedEdgeId);
+                const rotulo = (edgeObj?.title || edgeObj?.label || 'Vínculo relacional').replace('Vínculo relacional: ', '');
+                document.getElementById('ctx-edge-input').value = rotulo;
+                document.getElementById('ctx-remover-edge').style.display = (edgeObj && edgeObj.origem) ? '' : 'none';
+                const editavel = !!(edgeObj && (edgeObj.origem === 'manual' || edgeObj.origem === 'anotacao'));
+                document.getElementById('ctx-editar-edge').style.display = editavel ? '' : 'none';
+                document.getElementById('ctx-anotar-edge').style.display = (edgeObj && !edgeObj.origem) ? '' : 'none';
+                calcularPosicaoSeguraMenu(document.getElementById('ctx-edge-menu'), domX, domY, 'flex');
+                return;
+            }
+
+            contextMenuNodeId = null;
+            contextMenuEdgeId = null;
+            const temSelecao = selecaoMultiplaDeliberada && selectedNodesQueue && selectedNodesQueue.length > 0;
+            document.getElementById('ctx-bg-empty-section').style.display = temSelecao ? 'none' : 'block';
+            document.getElementById('ctx-bg-multi-section').style.display = temSelecao ? 'block' : 'none';
+            if (temSelecao) {
+                document.getElementById('ctx-multi-count').innerText = `${selectedNodesQueue.length} selecionado(s)`;
+                document.getElementById('ctx-criar-vinculo').style.display = selectedNodesQueue.length === 2 ? '' : 'none';
+                const tiposSel = new Set(selectedNodesQueue.map(id => (nodeIndexMap.get(id) || {}).tipo));
+                document.getElementById('ctx-fundir').style.display = (selectedNodesQueue.length >= 2 && tiposSel.size === 1) ? '' : 'none';
+            }
+            calcularPosicaoSeguraMenu(document.getElementById('ctx-bg-menu'), domX, domY, 'block');
+        }
+
+        function ctxCopiarDado() { if (!contextMenuNodeId) return; const n = nodeIndexMap.get(contextMenuNodeId); if (n) navigator.clipboard.writeText(n.valor || n.id); ocultarTodosMenusContexto(); }
+        function ctxCentralizar() { if (contextMenuNodeId) network.focus(contextMenuNodeId, { scale: 1.15, animation: { duration: 350 } }); ocultarTodosMenusContexto(); }
+        function pedirRemocao(nodeIds, edgeIds) {
+            if (!(nodeIds && nodeIds.length) && !(edgeIds && edgeIds.length)) return;
+            sendValueToStreamlit({ tipo: "remove_request", nodeIds: nodeIds || [], edgeIds: edgeIds || [], ts: Date.now() });
+        }
+        function ctxRemoverNo() { const id = contextMenuNodeId; ocultarTodosMenusContexto(); if (id) pedirRemocao([id], []); }
+        function ctxIsolarNoOficial() {
+            const id = contextMenuNodeId; ocultarTodosMenusContexto();
+            if (id) sendValueToStreamlit({ tipo: "isolate_request", nodeId: id, ts: Date.now() });
+        }
+        function ctxRemoverEdge() { const id = contextMenuEdgeId; ocultarTodosMenusContexto(); if (id) pedirRemocao([], [id]); }
+        function ctxRemoverSelecao() { ocultarTodosMenusContexto(); pedirRemocao([...selectedNodesQueue], []); }
+
+        // Delete com seleção (ou com o nó inspecionado) pede a remoção; nunca enquanto se digita.
+        document.addEventListener('keydown', function(e) {
+            if (e.key !== 'Delete' || e.repeat) return;
+            const ativoEl = document.activeElement;
+            if (ativoEl && (ativoEl.tagName === 'INPUT' || ativoEl.tagName === 'TEXTAREA' || ativoEl.isContentEditable)) return;
+            const ids = (selecaoMultiplaDeliberada && selectedNodesQueue.length) ? [...selectedNodesQueue]
+                : (currentInspectedNodeId ? [currentInspectedNodeId] : []);
+            if (ids.length) { e.preventDefault(); pedirRemocao(ids, []); }
+        });
+
+        // ---------------------------------------------------------------- patches incrementais
+        // O Python responde às escritas com {add, update, remove} em vez de reenviar o payload
+        // inteiro (o que pesava em grafos grandes e refazia a vista).
+        function reconstruirAdjacencia() {
+            adjacencyMap = new Map(); adjacencySimples = new Map();
+            rawNodes.forEach(n => { adjacencyMap.set(n.id, []); adjacencySimples.set(n.id, []); });
+            rawEdges.forEach(e => {
+                const title = e.title ? e.title.replace('Vínculo relacional: ', '') : 'Conexão';
+                if (adjacencyMap.has(e.from)) adjacencyMap.get(e.from).push({ id: e.to, title });
+                if (adjacencyMap.has(e.to)) adjacencyMap.get(e.to).push({ id: e.from, title });
+                if (adjacencySimples.has(e.from)) adjacencySimples.get(e.from).push(e.to);
+                if (adjacencySimples.has(e.to)) adjacencySimples.get(e.to).push(e.from);
+            });
+        }
+
+        const posicoesRemovidas = new Map();
+        function aplicarPatchGrafo(p) {
+            if (!p || !network) return;
+            const rem = p.remove || {}, add = p.add || {}, upd = p.update || {};
+            const nosRem = new Set(rem.nodes || []);
+            const arestasRem = new Set(rem.edges || []);
+            rawEdges.forEach(e => { if (nosRem.has(e.from) || nosRem.has(e.to)) arestasRem.add(e.id); });
+            if (arestasRem.size) {
+                edgesDataSet.remove([...arestasRem].filter(id => edgesDataSet.get(id)));
+                rawEdges = rawEdges.filter(e => !arestasRem.has(e.id));
+                arestasRem.forEach(id => edgeOriginalStyleMap.delete(id));
+            }
+            if (nosRem.size) {
+                const pos = network.getPositions([...nosRem]);
+                Object.entries(pos).forEach(([id, p]) => posicoesRemovidas.set(id, p));
+                nodesDataSet.remove([...nosRem].filter(id => nodesDataSet.get(id)));
+                rawNodes = rawNodes.filter(n => !nosRem.has(n.id));
+                nosRem.forEach(id => nodeIndexMap.delete(id));
+                selectedNodesQueue = selectedNodesQueue.filter(id => !nosRem.has(id));
+                if (!selectedNodesQueue.length) selecaoMultiplaDeliberada = false;
+                if (currentInspectedNodeId && nosRem.has(currentInspectedNodeId)) closeDrawer();
+                atualizarBadgeFindPath();
+            }
+            const novosNos = (add.nodes || []).filter(n => !nodeIndexMap.has(n.id));
+            if (novosNos.length) {
+                novosNos.forEach(n => {                   // restaurado: volta para onde estava
+                    const p = posicoesRemovidas.get(n.id);
+                    if (p && n.x === undefined) { n.x = p.x; n.y = p.y; }
+                });
+                posicionarNosOrbitalmente(novosNos);
+                novosNos.forEach(n => { rawNodes.push(n); nodeIndexMap.set(n.id, n); });
+                nodesDataSet.add(novosNos);
+            }
+            (upd.nodes || []).forEach(n => { const o = nodeIndexMap.get(n.id); if (o) Object.assign(o, n); });
+            if ((upd.nodes || []).length) nodesDataSet.update(upd.nodes);
+            const novasArestas = (add.edges || []).filter(e => !edgeOriginalStyleMap.has(e.id) && nodeIndexMap.has(e.from) && nodeIndexMap.has(e.to));
+            if (novasArestas.length) {
+                rawEdges.push(...novasArestas);
+                const pares = new Set(novasArestas.map(e => [e.from, e.to].sort().join('__')));
+                const afetadas = rawEdges.filter(e => pares.has([e.from, e.to].sort().join('__')));
+                aplicarCurvaturaECoresArestas(afetadas);          // pares paralelos ficam curvos
+                novasArestas.forEach(e => edgeOriginalStyleMap.set(e.id, { colorObj: JSON.parse(JSON.stringify(e.color)), width: e.width }));
+                edgesDataSet.update(afetadas);
+            }
+            (upd.edges || []).forEach(e => { const o = rawEdges.find(x => x.id === e.id); if (o) Object.assign(o, e); });
+            if ((upd.edges || []).length) edgesDataSet.update(upd.edges);
+            reconstruirAdjacencia();
+            montarFiltrosTipo();
+            if (tiposOcultos.size || filtroRegras.regras.length) aplicarFiltros();
+            if (p.focus && nodeIndexMap.has(p.focus)) selectInspectedNode(p.focus);
+        }
+
+        // ---------------------------------------------------------------- vínculo manual com rascunho (item 3)
+        // Rascunho só no navegador: Esc descarta sem rastro. Gravar manda edge_create; o Python
+        // responde com patch trocando o rascunho pela aresta real (ou removendo, com aviso).
+        let sugestoesVinculo = {};
+        const lig = { origem: null, mouse: null };           // Alt+arrastar em andamento
+        const lm = { aberto: false, modo: null, rascunho: null, aresta: null, de: null, para: null, refOficial: null, abertoEm: 0 };
+
+        function desenharLinhaElastica(ctx) {
+            if (!lig.origem || !lig.mouse) return;
+            const p = network.getPositions([lig.origem])[lig.origem];
+            if (!p) return;
+            ctx.save();
+            ctx.setLineDash([6, 4]); ctx.strokeStyle = '#FF7300'; ctx.lineWidth = 1.6 / network.getScale();
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(lig.mouse.x, lig.mouse.y); ctx.stroke();
+            ctx.restore();
+        }
+
+        function domDoEvento(e) {
+            const r = container.getBoundingClientRect();
+            return { x: e.clientX - r.left, y: e.clientY - r.top };
+        }
+
+        // Alt foca a barra de menus em alguns navegadores no Windows: bloqueado aqui.
+        document.addEventListener('keydown', function(e) { if (e.key === 'Alt') e.preventDefault(); });
+        container.addEventListener('pointerdown', function(e) {
+            if (!e.altKey || !network || e.button !== 0) return;
+            const id = network.getNodeAt(domDoEvento(e));
+            if (!id || String(id).startsWith('tmp_')) return;
+            e.preventDefault(); e.stopPropagation();          // não arrasta o nó nem a vista
+            lig.origem = id; lig.mouse = network.DOMtoCanvas(domDoEvento(e));
+        }, true);
+        window.addEventListener('pointermove', function(e) {
+            if (!lig.origem) return;
+            lig.mouse = network.DOMtoCanvas(domDoEvento(e)); network.redraw();
+        });
+        window.addEventListener('pointerup', function(e) {
+            if (!lig.origem) return;
+            const de = lig.origem, para = network.getNodeAt(domDoEvento(e));
+            lig.origem = null; lig.mouse = null; network.redraw();
+            if (para && para !== de && !String(para).startsWith('tmp_')) criarRascunho(de, para);   // no vazio: cancela
+        }, true);
+
+        function criarRascunho(de, para, refOficial) {
+            const id = 'draft_' + Math.random().toString(36).slice(2, 10);
+            const e = { id, from: de, to: para, dashes: [3, 3], width: 1.6, label: '', manter_setas: true,
+                        color: { color: '#A1A1AA', highlight: '#FF7300', inherit: false, opacity: 0.9 },
+                        arrows: { to: { enabled: true, scaleFactor: 0.5, type: 'arrow' } } };
+            rawEdges.push(e);
+            const par = [de, para].sort().join('__');
+            const afetadas = rawEdges.filter(x => [x.from, x.to].sort().join('__') === par);
+            const cor = e.color; aplicarCurvaturaECoresArestas(afetadas); e.color = cor;     // curva sem sobrepor a oficial
+            edgesDataSet.update(afetadas);
+            abrirMenuVinculo({ modo: refOficial ? 'anotar' : 'criar', rascunho: e, de, para, refOficial });
+        }
+
+        function rotuloCurto(id) {
+            const n = nodeIndexMap.get(id);
+            const t = (n && (n.label || n.valor)) || id;
+            return t.length > 18 ? t.slice(0, 17) + '…' : t;
+        }
+
+        function abrirMenuVinculo(o) {
+            ocultarTodosMenusContexto(); fecharQuickAdd && qa.aberto && fecharQuickAdd();
+            const a = o.aresta;
+            Object.assign(lm, { aberto: true, modo: o.modo, rascunho: o.rascunho || null, aresta: a || null,
+                                de: a ? a.from : o.de, para: a ? a.to : o.para, refOficial: o.refOficial || null, abertoEm: Date.now() });
+            const A = rotuloCurto(lm.de), B = rotuloCurto(lm.para);
+            document.getElementById('lm-titulo').textContent = { criar: 'Novo vínculo', editar: 'Editar vínculo', anotar: 'Anotar vínculo da base' }[o.modo];
+            document.getElementById('lm-pontas').textContent = `${A}  ↔  ${B}`;
+            document.getElementById('lm-direcao').innerHTML =
+                `<option value="de_para">${A} → ${B}</option><option value="para_de">${B} → ${A}</option><option value="nenhuma">sem seta</option>`;
+            const tA = (nodeIndexMap.get(lm.de) || {}).tipo || '', tB = (nodeIndexMap.get(lm.para) || {}).tipo || '';
+            const sug = sugestoesVinculo[[tA, tB].sort().join('|')] || ['vizinhos', 'mesmo endereço'];
+            document.getElementById('lm-sugestoes').innerHTML = sug.map(s => `<option value="${s}"></option>`).join('');
+            lm.sugestoes = sug;
+            document.getElementById('lm-rotulo').value = a ? (a.rotulo || '') : '';
+            document.getElementById('lm-direcao').value = a ? (a.direcao || 'de_para') : 'de_para';
+            document.getElementById('lm-situacao').value = a ? (a.situacao || 'confirmado') : 'confirmado';
+            document.getElementById('lm-data').value = a ? (a.data_ref || '') : '';
+            document.getElementById('lm-confianca').value = a && a.confianca ? String(a.confianca) : '';
+            document.getElementById('lm-obs').value = a ? (a.observacao || '') : '';
+            avisoRotulo();
+            const pa = network.canvasToDOM(network.getPositions([lm.de])[lm.de] || { x: 0, y: 0 });
+            const pb = network.canvasToDOM(network.getPositions([lm.para])[lm.para] || { x: 0, y: 0 });
+            const box = document.getElementById('link-menu'), r = container.getBoundingClientRect();
+            box.style.display = 'block';
+            box.style.left = Math.max(8, Math.min((pa.x + pb.x) / 2 + 12, r.width - 312)) + 'px';
+            box.style.top = Math.max(8, Math.min((pa.y + pb.y) / 2 + 12, r.height - box.offsetHeight - 8)) + 'px';
+            setTimeout(() => document.getElementById('lm-rotulo').focus(), 0);
+        }
+
+        function avisoRotulo() {
+            const v = document.getElementById('lm-rotulo').value.trim().toLowerCase();
+            const fora = v && !(lm.sugestoes || []).some(s => s.toLowerCase() === v);
+            document.getElementById('lm-aviso').textContent = fora ? 'Fora da lista sugerida (aceito como texto livre).' : '';
+        }
+        document.getElementById('lm-rotulo').addEventListener('input', avisoRotulo);
+
+        function fecharMenuVinculo() {
+            lm.aberto = false;
+            document.getElementById('link-menu').style.display = 'none';
+        }
+
+        function cancelarMenuVinculo() {
+            if (lm.rascunho) aplicarPatchGrafo({ remove: { edges: [lm.rascunho.id] } });     // rascunho some sem rastro
+            fecharMenuVinculo();
+        }
+
+        function camposDoMenu() {
+            return {
+                rotulo: document.getElementById('lm-rotulo').value.trim(),
+                direcao: document.getElementById('lm-direcao').value,
+                situacao: document.getElementById('lm-situacao').value,
+                data_ref: document.getElementById('lm-data').value,
+                confianca: document.getElementById('lm-confianca').value,
+                observacao: document.getElementById('lm-obs').value.trim(),
+            };
+        }
+
+        function estiloOtimista(c) {
+            return { label: c.rotulo, dashes: c.situacao === 'hipotese' ? [6, 4] : false, manter_setas: true,
+                     arrows: { to: { enabled: c.direcao === 'de_para', scaleFactor: 0.5, type: 'arrow' },
+                               from: { enabled: c.direcao === 'para_de', scaleFactor: 0.5, type: 'arrow' } } };
+        }
+
+        function confirmarMenuVinculo() {
+            const c = camposDoMenu();
+            if (lm.modo === 'editar' && lm.aresta) {
+                // Otimista: aplica já; se a gravação falhar, o Python devolve os valores antigos.
+                aplicarPatchGrafo({ update: { edges: [{ id: lm.aresta.id, ...estiloOtimista(c), ...c }] } });
+                sendValueToStreamlit({ tipo: "edge_update", id: lm.aresta.id, ...c, ts: Date.now() });
+            } else if (lm.rascunho) {
+                edgesDataSet.update({ id: lm.rascunho.id, ...estiloOtimista(c) });
+                sendValueToStreamlit({ tipo: "edge_create", tmp_id: lm.rascunho.id, de: lm.de, para: lm.para,
+                                       ref_oficial: lm.refOficial || '', ...c, ts: Date.now() });
+            }
+            lm.rascunho = null;
+            fecharMenuVinculo();
+        }
+
+        document.getElementById('link-menu').addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancelarMenuVinculo(); }
+            else if (e.key === 'Enter' && e.target.tagName !== 'SELECT') { e.preventDefault(); confirmarMenuVinculo(); }
+        });
+        document.addEventListener('mousedown', function(e) {      // clique fora descarta o rascunho
+            if (lm.aberto && Date.now() - lm.abertoEm > 300 && !e.target.closest('#link-menu')) cancelarMenuVinculo();
+        });
+
+        function ctxEditarEdge() {
+            const e = rawEdges.find(x => x.id === contextMenuEdgeId); ocultarTodosMenusContexto();
+            if (e) abrirMenuVinculo({ modo: 'editar', aresta: e });
+        }
+        function ctxAnotarEdge() {
+            const e = rawEdges.find(x => x.id === contextMenuEdgeId); ocultarTodosMenusContexto();
+            if (e) criarRascunho(e.from, e.to, e.id);
+        }
+        function ctxFundirSelecao() {
+            ocultarTodosMenusContexto();
+            if (selectedNodesQueue.length >= 2) sendValueToStreamlit({ tipo: "merge_request", ids: [...selectedNodesQueue], ts: Date.now() });
+        }
+        function ctxCriarVinculoSelecao() {
+            ocultarTodosMenusContexto();
+            if (selectedNodesQueue.length === 2) criarRascunho(selectedNodesQueue[0], selectedNodesQueue[1]);
+        }
+
+        // ---------------------------------------------------------------- pivôs (item 7)
+        // O menu do nó lista os pivôs que aceitam o tipo dele; com vários nós do mesmo tipo
+        // selecionados, o pivô roda em todos. Parâmetros, estimativa e execução ficam no Python.
+        let catalogoPivos = [];
+        function montarMenuPivos(nodeObj) {
+            const caixa = document.getElementById('ctx-pivos'); caixa.innerHTML = '';
+            const lista = catalogoPivos.filter(p => nodeObj && p.entrada.includes(nodeObj.tipo));
+            if (!lista.length) return;
+            const t = document.createElement('div'); t.className = 'ctx-subtitulo'; t.textContent = 'Pivôs'; caixa.appendChild(t);
+            lista.forEach(p => {
+                const it = document.createElement('div'); it.className = 'ctx-item'; it.title = p.descricao || '';
+                it.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg> ${p.rotulo}`
+                    + (p.tem_parametros ? `<span class="ctx-param"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>` : '');
+                it.onclick = () => {
+                    const alvo = contextMenuNodeId; ocultarTodosMenusContexto();
+                    const mesmos = (selecaoMultiplaDeliberada && selectedNodesQueue.includes(alvo))
+                        ? selectedNodesQueue.filter(id => (nodeIndexMap.get(id) || {}).tipo === nodeObj.tipo) : [alvo];
+                    sendValueToStreamlit({ tipo: "pivot_request", pivo: p.chave, nodeIds: mesmos, ts: Date.now() });
+                };
+                caixa.appendChild(it);
+            });
+        }
+
+        // "Mostrar só o que este pivô trouxe": as entradas e o que a execução criou; o resto some até limpar.
+        function aplicarFiltroExecucao(msg) {
+            const manter = new Set(msg.entradas || []);
+            rawNodes.forEach(n => { if (n.id_execucao === msg.id) manter.add(n.id); });
+            nodesDataSet.update(rawNodes.map(n => ({ id: n.id, hidden: !manter.has(n.id) })));
+            document.getElementById('filtro-exec-txt').textContent = `Só o que "${msg.rotulo}" trouxe · ${manter.size} nó(s)`;
+            document.getElementById('filtro-exec').style.display = 'flex';
+        }
+        function limparFiltroExecucao() {
+            document.getElementById('filtro-exec').style.display = 'none';
+            aplicarFiltros();
+        }
+
+        // ---------------------------------------------------------------- quick-add e colar (item 2)
+        // A detecção do tipo é feita no Python (registro de tipos): aqui só a interface.
+        const qa = { aberto: false, canvas: { x: 0, y: 0 }, reqId: 0, chips: [], idx: -1, ambiguo: false, timer: null };
+        let ultimoMouseCanvas = null;
+
+        function estaDigitando() {
+            const a = document.activeElement;
+            return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable));
+        }
+
+        function abrirQuickAdd(dom, canvas) {
+            if (!network) return;
+            ocultarTodosMenusContexto();
+            const box = document.getElementById('quick-add');
+            qa.aberto = true; qa.canvas = { x: canvas.x, y: canvas.y }; qa.chips = []; qa.idx = -1; qa.ambiguo = false;
+            const bounds = container.getBoundingClientRect();
+            box.style.display = 'block';
+            box.style.left = Math.max(8, Math.min(dom.x - 20, bounds.width - 310)) + 'px';
+            box.style.top = Math.max(8, Math.min(dom.y - 18, bounds.height - 180)) + 'px';
+            const inp = document.getElementById('qa-input');
+            inp.value = ''; document.getElementById('qa-chips').innerHTML = '';
+            definirDicaQA('Enter cria · Tab alterna o tipo · Esc cancela', false);
+            setTimeout(() => inp.focus(), 0);
+        }
+
+        function fecharQuickAdd() {
+            qa.aberto = false; clearTimeout(qa.timer);
+            document.getElementById('quick-add').style.display = 'none';
+            document.getElementById('qa-input').blur();
+        }
+
+        function definirDicaQA(texto, alerta) {
+            const d = document.getElementById('qa-dica');
+            d.textContent = texto; d.classList.toggle('alerta', !!alerta);
+        }
+
+        function corDoTipo(chave) {
+            const t = tiposPayload.find(x => x.chave === chave);
+            return (t && t.cor && t.cor.bg) || '#71717A';
+        }
+
+        function desenharChipsQA() {
+            const caixa = document.getElementById('qa-chips'); caixa.innerHTML = '';
+            qa.chips.forEach((c, i) => {
+                const el = document.createElement('span');
+                el.className = 'qa-chip' + (i === qa.idx ? ' ativo' : '');
+                const cor = document.createElement('i'); cor.style.background = (c.cor && c.cor.bg) || corDoTipo(c.tipo);
+                const rot = document.createElement('span'); rot.textContent = c.candidato ? `${c.rotulo} ${c.valor_fmt}` : c.rotulo;
+                el.append(cor, rot);
+                if (c.candidato) { const conf = document.createElement('b'); conf.textContent = c.confianca; el.appendChild(conf); }
+                el.onmousedown = (ev) => { ev.preventDefault(); qa.idx = i; confirmarQuickAdd(); };
+                caixa.appendChild(el);
+            });
+        }
+
+        function receberResultadoQA(msg) {
+            if (!qa.aberto || msg.req_id !== qa.reqId) return;      // resposta velha: ignora
+            const cands = (msg.candidatos || []).map(c => ({ ...c, candidato: true }));
+            qa.ambiguo = !!msg.ambiguo;
+            qa.chips = cands.length ? cands : (msg.tipos || []).map(t => ({ tipo: t.chave, rotulo: t.rotulo, cor: t.cor, candidato: false }));
+            qa.idx = (cands.length && !qa.ambiguo) ? 0 : -1;        // ambíguo ou sem candidato: o analista escolhe
+            desenharChipsQA();
+            if (qa.ambiguo) definirDicaQA('Serve para mais de um tipo: escolha com Tab ou clique', true);
+            else if (!cands.length) definirDicaQA('Tipo não reconhecido: escolha na lista (Tab ou clique)', true);
+            else definirDicaQA('Enter cria · Tab alterna o tipo · Esc cancela', false);
+        }
+
+        function confirmarQuickAdd() {
+            const texto = document.getElementById('qa-input').value.trim();
+            if (!texto) return;
+            const c = qa.chips[qa.idx];
+            if (!c) { definirDicaQA(qa.chips.length ? 'Escolha o tipo antes (Tab ou clique)' : 'Aguarde a detecção do tipo…', true); return; }
+            // Nó provisório tracejado, já no lugar do clique; o Python troca pelo definitivo (ou remove).
+            const tmpId = 'tmp_' + Math.random().toString(36).slice(2, 10);
+            const prov = {
+                id: tmpId, label: c.candidato ? c.valor_fmt : texto, tipo: c.tipo, x: qa.canvas.x, y: qa.canvas.y,
+                shape: 'dot', size: 14, borderWidth: 2, shapeProperties: { borderDashes: [4, 3] },
+                color: { background: 'rgba(0,0,0,0)', border: corDoTipo(c.tipo) },
+                font: { color: '#A1A1AA', size: baseFontSize, face: 'Segoe UI, -apple-system, sans-serif' }
+            };
+            rawNodes.push(prov); nodeIndexMap.set(tmpId, prov); nodesDataSet.add(prov);
+            sendValueToStreamlit({ tipo: "quick_add_commit", tmp_id: tmpId, tipo_entidade: c.tipo,
+                                   valor: texto, x: qa.canvas.x, y: qa.canvas.y, ts: Date.now() });
+            fecharQuickAdd();
+        }
+
+        document.getElementById('qa-input').addEventListener('input', function() {
+            clearTimeout(qa.timer);
+            const texto = this.value;
+            qa.chips = []; qa.idx = -1; desenharChipsQA();
+            if (!texto.trim()) { definirDicaQA('Enter cria · Tab alterna o tipo · Esc cancela', false); return; }
+            qa.timer = setTimeout(() => {
+                qa.reqId += 1;
+                sendValueToStreamlit({ tipo: "quick_add_detect", req_id: qa.reqId, texto, ts: Date.now() });
+            }, 150);
+        });
+        document.getElementById('qa-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); fecharQuickAdd(); return; }   // sem rastro
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                if (qa.chips.length) { qa.idx = (qa.idx + (e.shiftKey ? qa.chips.length - 1 : 1)) % qa.chips.length; desenharChipsQA(); }
+                return;
+            }
+            if (e.key === 'Enter') { e.preventDefault(); confirmarQuickAdd(); }
+        });
+        document.getElementById('qa-input').addEventListener('blur', function() {
+            setTimeout(() => { if (qa.aberto && document.activeElement !== this) fecharQuickAdd(); }, 150);
+        });
+
+        // Tecla N: o mesmo campo, no centro da tela.
+        document.addEventListener('keydown', function(e) {
+            if (e.key.toLowerCase() !== 'n' || e.repeat || e.ctrlKey || e.metaKey || e.altKey || estaDigitando() || !network) return;
+            e.preventDefault();
+            const r = container.getBoundingClientRect();
+            const dom = { x: r.width / 2, y: r.height / 2 };
+            abrirQuickAdd(dom, network.DOMtoCanvas(dom));
+        });
+
+        // Colar (Ctrl+V com o canvas focado): cada linha vira um candidato; o Python abre a prévia.
+        container.addEventListener('mousemove', function(e) {
+            if (!network) return;
+            const r = container.getBoundingClientRect();
+            ultimoMouseCanvas = network.DOMtoCanvas({ x: e.clientX - r.left, y: e.clientY - r.top });
+        });
+        document.addEventListener('paste', function(e) {
+            if (estaDigitando() || !network) return;
+            const texto = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+            const linhas = texto.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            if (!linhas.length) return;
+            e.preventDefault();
+            const r = container.getBoundingClientRect();
+            const p = ultimoMouseCanvas || network.DOMtoCanvas({ x: r.width / 2, y: r.height / 2 });
+            sendValueToStreamlit({ tipo: "paste_request", linhas: linhas.slice(0, 1000), x: p.x, y: p.y, ts: Date.now() });
+        });
+
+        function ctxIsolar() { if (contextMenuNodeId) applyHighlight(contextMenuNodeId); ocultarTodosMenusContexto(); }
+        function ctxAbrirDrawer() { if (contextMenuNodeId) { openInspector(contextMenuNodeId); applyHighlight(contextMenuNodeId); } ocultarTodosMenusContexto(); }
+        function ctxEnrich() { if (contextMenuNodeId) { currentInspectedNodeId = contextMenuNodeId; dispararEnrich(); } ocultarTodosMenusContexto(); }
+        function ctxAplicarFlag(cor) {
+            if (!contextMenuNodeId) return;
+            const nodeObj = nodeIndexMap.get(contextMenuNodeId);
+            if (!nodeObj) return;
+            const novaCor = nodeObj.flag === cor ? null : cor;
+            nodeObj.flag = novaCor;
+            const bordaCor = novaCor ? (FLAG_CORES[novaCor] || '#FF7300') : (contextMenuNodeId === masterHubId ? '#FF7300' : undefined);
+            const updatePayload = { id: contextMenuNodeId, borderWidth: novaCor ? 4 : (contextMenuNodeId === masterHubId ? 3.5 : 1.2) };
+            if (bordaCor) updatePayload.color = { ...(nodeObj.color || {}), border: bordaCor };
+            nodesDataSet.update(updatePayload);
+            // a flag agora persiste: o Python grava (anotação, se o nó for oficial) e responde com o estilo final
+            sendValueToStreamlit({ tipo: "entity_update", node_id: contextMenuNodeId, aparencia: { flag: novaCor }, ts: Date.now() });
+            ocultarTodosMenusContexto();
+        }
+
+        function ctxIsolarVizinhanca() {
+            if (!contextMenuNodeId || !network) return;
+            const focusId = contextMenuNodeId;
+            ocultarTodosMenusContexto();
+
+            const connected = network.getConnectedNodes(focusId);
+            const vizinhosSet = new Set(connected);
+            vizinhosSet.add(focusId);
+
+            const updates = [];
+            nodesDataSet.forEach(node => {
+                updates.push({ id: node.id, hidden: !vizinhosSet.has(node.id) });
+            });
+            nodesDataSet.update(updates);
+
+            vizinhancaIsoladaAtiva = true;
+            const banner = document.getElementById('neighborhood-banner');
+            const nObj = nodeIndexMap.get(focusId);
+            document.getElementById('nb-focus-name').innerText = `${nObj ? nObj.label : focusId} (${vizinhosSet.size} nós)`;
+            banner.style.display = 'flex';
+
+            network.fit({ nodes: Array.from(vizinhosSet), animation: { duration: 350 }, padding: 60 });
+        }
+
+        function restaurarVisaoCompleta() {
+            const todosIds = nodesDataSet.getIds();
+            const updates = todosIds.map(id => ({ id, hidden: false }));
+            nodesDataSet.update(updates);
+
+            vizinhancaIsoladaAtiva = false;
+            document.getElementById('neighborhood-banner').style.display = 'none';
+            fitView();
+        }
+
+        function ctxCopiarRotuloEdge() {
+            const inputEl = document.getElementById('ctx-edge-input');
+            if (inputEl.value) navigator.clipboard.writeText(inputEl.value);
+            ocultarTodosMenusContexto();
+        }
+        function ctxDestacarEdge() {
+            if (!contextMenuEdgeId) return;
+            const edgeObj = edgesDataSet.get(contextMenuEdgeId);
+            ocultarTodosMenusContexto();
+            if (!edgeObj) return;
+            edgeHighlightActive = true;
+            currentHighlightId = null;
+            const nodesSet = new Set([edgeObj.from, edgeObj.to]);
+            const updates = [];
+            nodesDataSet.forEach(node => updates.push({
+                id: node.id,
+                opacity: nodesSet.has(node.id) ? 1.0 : 0.10,
+                borderWidth: nodesSet.has(node.id) ? 3.5 : 1.0
+            }));
+            nodesDataSet.update(updates);
+            aplicarDestaqueArestasPorNos(nodesSet, '#FF7300');
+            network.fit({ nodes: Array.from(nodesSet), animation: { duration: 300 }, padding: 100 });
+        }
+
+        function ctxBuscarEntidade() {
+            ocultarTodosMenusContexto();
+            const p = document.getElementById('search-panel');
+            p.style.display = 'block';
+            document.getElementById('rail-search').classList.add('active');
+            setTimeout(() => document.getElementById('search-input').focus(), 30);
+        }
+        function ctxRecalcularLayoutMenu() { ocultarTodosMenusContexto(); resetarOuRecalcularLayout(); }
+        function ctxLimparSelecaoBg() { ocultarTodosMenusContexto(); limparSelecaoMultipla(); }
+        function ctxCopiarLoteTexto() {
+            if (!selectedNodesQueue || selectedNodesQueue.length === 0) { ocultarTodosMenusContexto(); return; }
+            const texto = selectedNodesQueue.map(id => nodeIndexMap.get(id)?.label || id).join('\n');
+            navigator.clipboard.writeText(texto);
+            ocultarTodosMenusContexto();
+        }
+        function ctxExportarLoteJson() { ocultarTodosMenusContexto(); exportJSON(); }
+
+        function switchDrawerTab(tab) {
+            document.querySelectorAll('.drawer-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+            document.querySelectorAll('.drawer-tab-content').forEach(el => el.classList.toggle('active', el.id === 'tab-' + tab));
+        }
+
+        function desenharNeighborsPreview(nodeId, connectedIds) {
+            const canvas = document.getElementById('drawer-neighbors-preview'); if (!canvas) return;
+            const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!connectedIds || connectedIds.length === 0) return;
+            const cx = canvas.width / 2, cy = canvas.height / 2;
+            const exibicaoIds = connectedIds.slice(0, 36);
+            const raio = Math.min(50, 24 + exibicaoIds.length * 1.1);
+            const posicoes = [];
+            ctx.strokeStyle = "rgba(184,184,184,0.3)"; ctx.lineWidth = 1;
+            exibicaoIds.forEach((id, i) => {
+                const ang = (2 * Math.PI * i) / exibicaoIds.length;
+                const px = cx + raio * Math.cos(ang), py = cy + raio * Math.sin(ang);
+                posicoes.push([px, py]);
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.stroke();
+            });
+            exibicaoIds.forEach((id, i) => {
+                const nObj = nodeIndexMap.get(id); const [px, py] = posicoes[i];
+                ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 2 * Math.PI);
+                ctx.fillStyle = nObj && nObj.color ? nObj.color.background : "#FF7300"; ctx.fill();
+            });
+            const centerObj = nodeIndexMap.get(nodeId);
+            ctx.beginPath(); ctx.arc(cx, cy, 7.5, 0, 2 * Math.PI);
+            ctx.fillStyle = centerObj && centerObj.color ? centerObj.color.background : "#FF7300"; ctx.fill();
+            ctx.strokeStyle = "#FF7300"; ctx.lineWidth = 1.8; ctx.stroke();
+        }
+
+        function openInspector(nodeId) {
+            const nodeObj = nodeIndexMap.get(nodeId); if (!nodeObj) return;
+            currentInspectedNodeId = nodeId;
+            const drawer = document.getElementById('inspector-drawer');
+            const badge = document.getElementById('drawer-badge'), rowNome = document.getElementById('drawer-row-nome');
+            badge.innerText = (nodeObj.tipo || "ENTIDADE").toUpperCase();
+            badge.style.background = nodeObj.color ? nodeObj.color.background : "#3C6FA8";
+            badge.style.color = "#FFFFFF";
+            document.getElementById('drawer-title').innerText = nodeObj.label;
+            document.getElementById('drawer-val').innerText = nodeObj.valor || nodeObj.id;
+            document.getElementById('drawer-degree').innerText = `${nodeObj.degree || 1} conexão(ões)`;
+            document.getElementById('drawer-betweenness').innerText = nodeObj.betweenness !== undefined ? `${nodeObj.betweenness}` : '0.0';
+            document.getElementById('drawer-community').innerText = nodeObj.community !== undefined ? `Grupo #${nodeObj.community}` : 'Principal';
+            if (nodeObj.tipo === "cpf" && nodeObj.nome_titular) { rowNome.style.display = "flex"; document.getElementById('drawer-nome').innerText = nodeObj.nome_titular; }
+            else { rowNome.style.display = "none"; }
+            const origens = { manual: 'criado pelo analista', pivo: 'trazido por pivô/Enrich', importacao: 'importado' };
+            document.getElementById('drawer-origem').textContent = [
+                nodeObj.origem ? `Origem: ${origens[nodeObj.origem] || nodeObj.origem}` : 'Origem: base oficial (blacklist)',
+                nodeObj.flag ? `Flag: ${rotulosFlags[nodeObj.flag] || nodeObj.flag}` : '',
+                nodeObj.tem_nota ? 'tem nota' : ''].filter(Boolean).join(' · ');
+            switchDrawerTab('details');
+
+            const vizinhos = adjacencyMap.get(nodeId) || [];
+            desenharNeighborsPreview(nodeId, vizinhos.map(v => v.id));
+            const listEl = document.getElementById('drawer-neighbors-list'); listEl.innerHTML = "";
+            vizinhos.slice(0, 35).forEach(nb => {
+                const nbObj = nodeIndexMap.get(nb.id); if (!nbObj) return;
+                const item = document.createElement('div');
+                item.className = 'neighbor-item';
+                item.onclick = function() { selectInspectedNode(nb.id); };
+                item.innerHTML = `<span>${nbObj.label}</span><span style="color:var(--primary); font-size:9px;">${nb.title}</span>`;
+                listEl.appendChild(item);
+            });
+
+            const relListEl = document.getElementById('drawer-relations-list');
+            if (relListEl) {
+                relListEl.innerHTML = "";
+                const arestasDoNo = rawEdges.filter(e => e.from === nodeId || e.to === nodeId);
+
+                if (arestasDoNo.length === 0) {
+                    relListEl.innerHTML = "<div style='color:var(--text-muted); font-size:11px; padding:6px;'>Nenhum vínculo catalogado.</div>";
+                } else {
+                    arestasDoNo.forEach(edge => {
+                        const sourceNode = nodeIndexMap.get(edge.from);
+                        const targetNode = nodeIndexMap.get(edge.to);
+                        if (!sourceNode || !targetNode) return;
+
+                        const labelAresta = edge.title ? edge.title.replace('Vínculo relacional: ', '') : (edge.label || 'RELATED_TO');
+                        const sColor = sourceNode.color ? (sourceNode.color.border || sourceNode.color.background || sourceNode.color) : "#3C6FA8";
+                        const tColor = targetNode.color ? (targetNode.color.border || targetNode.color.background || targetNode.color) : "#6BA57D";
+
+                        const row = document.createElement('div');
+                        row.style.display = 'flex';
+                        row.style.alignItems = 'center';
+                        row.style.justifyContent = 'space-between';
+                        row.style.background = 'rgba(255, 255, 255, 0.02)';
+                        row.style.border = '1px solid var(--border)';
+                        row.style.borderRadius = '6px';
+                        row.style.padding = '8px 10px';
+                        row.style.fontSize = '11px';
+
+                        row.innerHTML = `
+                            <span style="background:${sColor}26; color:${sColor}; border:1px solid ${sColor}55; padding:3px 8px; border-radius:4px; font-weight:700; max-width:105px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                ${sourceNode.label}
+                            </span>
+                            <span style="color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:0.5px; padding:0 6px;">
+                                &rarr; &nbsp; ${labelAresta} &nbsp; &rarr;
+                            </span>
+                            <span style="background:${tColor}26; color:${tColor}; border:1px solid ${tColor}55; padding:3px 8px; border-radius:4px; font-weight:700; max-width:105px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                ${targetNode.label}
+                            </span>
+                        `;
+                        relListEl.appendChild(row);
+                    });
+                }
+            }
+
+            drawer.classList.add('open');
+        }
+        function closeDrawer() { document.getElementById('inspector-drawer').classList.remove('open'); currentInspectedNodeId = null; }
+        function selectInspectedNode(nodeId) { openInspector(nodeId); applyHighlight(nodeId); if (network) network.focus(nodeId, { scale: 1.15, animation: { duration: 400 } }); }
+
+        (function initDrawerResize() {
+            const handleH = document.getElementById('drawer-resize-handle');
+            const drawer = document.getElementById('inspector-drawer');
+            let resizing = false;
+            handleH.addEventListener('mousedown', function(e) { resizing = true; document.body.style.userSelect = 'none'; e.preventDefault(); });
+            document.addEventListener('mousemove', function(e) { if (resizing) drawer.style.width = Math.min(640, Math.max(300, window.innerWidth - e.clientX - 12)) + "px"; });
+            document.addEventListener('mouseup', function() { resizing = false; document.body.style.userSelect = ''; });
+        })();
+
+        function marcarLayoutAtivo(mode) {
+            currentLayoutMode = mode;
+            ['organico', 'arvore', 'leque'].forEach(m => { const el = document.getElementById(`rail-${m}`); if (el) el.classList.toggle('active', m === mode); });
+        }
+
+        function aplicarCurvaturaECoresArestas(edges) {
+            const grupos = new Map();
+            edges.forEach(e => {
+                const chave = [e.from, e.to].sort().join('__');
+                if (!grupos.has(chave)) grupos.set(chave, []);
+                grupos.get(chave).push(e);
+            });
+
+            grupos.forEach(grupo => {
+                const total = grupo.length;
+                grupo.forEach((e, i) => {
+                    if (total <= 1) {
+                        e.smooth = false;
+                    } else {
+                        const roundness = (i - (total - 1) / 2) * 0.22;
+                        e.smooth = {
+                            enabled: true,
+                            type: 'curvedCW',
+                            roundness: Math.abs(roundness) < 0.001 ? 0 : roundness
+                        };
+                    }
+
+                    const targetNode = nodeIndexMap.get(e.to);
+                    const sourceNode = nodeIndexMap.get(e.from);
+                    let corAresta = "rgba(140, 140, 140, 0.45)";
+
+                    if (targetNode && targetNode.color) {
+                        corAresta = (targetNode.color.border || targetNode.color.background || targetNode.color) + "99";
+                    } else if (sourceNode && sourceNode.color) {
+                        corAresta = (sourceNode.color.border || sourceNode.color.background || sourceNode.color) + "99";
+                    }
+
+                    e.color = {
+                        color: corAresta,
+                        highlight: '#FF7300',
+                        hover: '#FF7300',
+                        inherit: false,
+                        opacity: 0.80
+                    };
+
+                    if (!e.manter_setas) e.arrows = {
+                        to: {
+                            enabled: true,
+                            scaleFactor: 0.42,
+                            type: 'arrow'
+                        }
+                    };
+                });
+            });
+        }
+
+        // ---------------------------------------------------------------- worker do grafo (item 8)
+        let workerGrafo = null, seqWorker = 0;
+        const esperas = new Map(), ultimoPedido = {};
+        function obterWorker() {
+            if (workerGrafo) return workerGrafo;
+            const src = document.getElementById('grafo-worker-src').textContent;
+            workerGrafo = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+            workerGrafo.onmessage = ev => { const r = esperas.get(ev.data.id); if (r) { esperas.delete(ev.data.id); r(ev.data); } };
+            return workerGrafo;
+        }
+        /** Pede ao worker; um pedido novo do mesmo tipo invalida o anterior (o resultado velho é ignorado). */
+        function pedirWorker(msg) {
+            const id = ++seqWorker; ultimoPedido[msg.tipo] = id;
+            return new Promise(resolve => {
+                esperas.set(id, r => { if (ultimoPedido[msg.tipo] === id) resolve(r); });
+                obterWorker().postMessage({ ...msg, id });
+            });
+        }
+
+        // Posições salvas por layout (vindas do Python) e nós fixados (o relayout não move).
+        let posicoesPorLayout = {};
+        function fixadosDe(mode) { return Object.entries(posicoesPorLayout[mode] || {}).filter(([, p]) => p.fixado); }
+
+        async function changeLayout(mode, forcarRegenerar = true) {
+            marcarLayoutAtivo(mode);
+            if (!network) return;
+            network.setOptions({ physics: { enabled: false } });
+            const salvas = posicoesPorLayout[mode] || {};
+            if (mode === "organico") {
+                const updates = rawNodes.map(n => {
+                    const s = salvas[n.id];
+                    return s ? { id: n.id, x: s.x, y: s.y } : (n.x !== undefined ? { id: n.id, x: n.x, y: n.y } : null);
+                }).filter(Boolean);
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); updateAdaptiveLOD(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 40);
+            } else {
+                const overlay = document.getElementById('loading-overlay');
+                if (overlay) overlay.style.display = 'flex';
+                const r = await pedirWorker({
+                    tipo: 'layout', algoritmo: mode, hub: masterHubId,
+                    nos: rawNodes.map(n => ({ id: n.id })),
+                    arestas: rawEdges.map(e => [e.from, e.to]),
+                    rotulos: Object.fromEntries(rawNodes.map(n => [n.id, n.label || ''])),
+                });
+                if (overlay) overlay.style.display = 'none';
+                if (currentLayoutMode !== mode) return;                 // o analista já trocou de layout
+                const updates = [];
+                rawNodes.forEach(n => {
+                    const s = salvas[n.id];
+                    // padrão: preserva o arranjo manual; "refazer tudo" só respeita os fixados
+                    const p = (s && (!forcarRegenerar || s.fixado)) ? s : r.posicoes[n.id];
+                    if (p) updates.push({ id: n.id, x: p.x, y: p.y });
+                });
+                nodesDataSet.update(updates);
+                setTimeout(() => { fitView(); updateAdaptiveLOD(); if (currentHighlightId) applyHighlight(currentHighlightId); }, 40);
+            }
+            sendValueToStreamlit({ tipo: "save_layout_positions", layout: mode, ts: Date.now() });   // só o layout ativo
+        }
+
+        function toggleMenuRelayout() {
+            const m = document.getElementById('relayout-menu');
+            m.style.display = m.style.display === 'block' ? 'none' : 'block';
+        }
+        function recalcularLayout(tudo) {
+            document.getElementById('relayout-menu').style.display = 'none';
+            if (!tudo) {
+                if (currentLayoutMode === 'organico') {
+                    const sem = rawNodes.filter(n => n.x === undefined && !(posicoesPorLayout.organico || {})[n.id]);
+                    posicionarNosOrbitalmente(sem); nodesDataSet.update(sem.map(n => ({ id: n.id, x: n.x, y: n.y })));
+                } else changeLayout(currentLayoutMode, false);
+                return;
+            }
+            document.getElementById('modal-confirm-hierarchy').style.display = 'flex';    // confirmação
+        }
+        function solicitarHierarchyLayout() { changeLayout('arvore', false); }
+        function fecharModalHierarchy() { document.getElementById('modal-confirm-hierarchy').style.display = 'none'; }
+        function confirmarHierarchyLayout() {
+            fecharModalHierarchy();
+            const mode = currentLayoutMode || 'organico';
+            const fixados = Object.fromEntries(fixadosDe(mode));
+            posicoesPorLayout[mode] = fixados;
+            if (mode === 'organico') { resetarOuRecalcularLayout(); return; }        // o orgânico é recalculado no Python
+            sendValueToStreamlit({ tipo: "clear_layout_positions", layout: mode, ts: Date.now() });
+            changeLayout(mode, true);
+        }
+
+        // ---------------------------------------------------------------- salvamento em lote + indicador
+        const ESCRITAS = new Set(['quick_add_commit', 'edge_create', 'edge_update', 'pin_nodes', 'entity_update']);
+        let posPendentes = {}, timerPos = null, revPos = 0, ultimoLotePos = null, timerSalvo = null;
+        function definirSalvamento(estado) {
+            const el = document.getElementById('indicador-salvo'); if (!el) return;
+            el.dataset.estado = estado;
+            clearTimeout(timerSalvo);
+            if (estado === 'salvo') timerSalvo = setTimeout(() => { el.dataset.estado = 'ocioso'; }, 2500);
+        }
+        function agendarSalvarPosicoes(posicoes) {
+            Object.assign(posPendentes, posicoes);
+            definirSalvamento('pendente');
+            clearTimeout(timerPos);
+            timerPos = setTimeout(enviarPosicoes, 1200);            // 1,2 s depois do último arraste
+        }
+        function enviarPosicoes() {
+            if (!Object.keys(posPendentes).length) return;
+            ultimoLotePos = { layout: currentLayoutMode || 'organico', posicoes: posPendentes, rev: ++revPos };
+            posPendentes = {};
+            definirSalvamento('salvando');
+            sendValueToStreamlit({ tipo: "save_positions", ...ultimoLotePos, ts: Date.now() });
+        }
+        function tentarSalvarDeNovo() {
+            const el = document.getElementById('indicador-salvo');
+            if (el.dataset.estado !== 'erro' || !ultimoLotePos) return;
+            Object.assign(posPendentes, ultimoLotePos.posicoes); enviarPosicoes();
+        }
+        function receberPosicoesSalvas(msg) {
+            if (!ultimoLotePos || msg.rev !== ultimoLotePos.rev) return;
+            definirSalvamento(msg.erro ? 'erro' : 'salvo');
+        }
+
+        function alternarFixado(id) {
+            const n = nodeIndexMap.get(id); if (!n || !network) return;
+            const p = network.getPositions([id])[id]; if (!p) return;
+            const fix = !n.fixado; n.fixado = fix;
+            const mode = currentLayoutMode || 'organico';
+            posicoesPorLayout[mode] = posicoesPorLayout[mode] || {};
+            posicoesPorLayout[mode][id] = { x: Math.round(p.x), y: Math.round(p.y), fixado: fix };
+            sendValueToStreamlit({ tipo: "pin_nodes", layout: mode, fixado: fix, posicoes: { [id]: { x: Math.round(p.x), y: Math.round(p.y) } }, ts: Date.now() });
+            network.redraw();
+        }
+        function desenharFixados(ctx) {
+            const ids = rawNodes.filter(n => n.fixado).map(n => n.id);
+            if (!ids.length) return;
+            const pos = network.getPositions(ids), s = 1 / network.getScale();
+            ctx.save(); ctx.fillStyle = '#FF7300';
+            ids.forEach(id => { const p = pos[id]; if (!p) return; ctx.beginPath(); ctx.arc(p.x + 14, p.y - 14, 3.2 * Math.max(1, s * 0.6), 0, 2 * Math.PI); ctx.fill(); });
+            ctx.restore();
+        }
+
+        function posicionarNosOrbitalmente(novosNos) {
+            const semPosicao = novosNos.filter(n => n.x === undefined || n.y === undefined);
+            if (semPosicao.length === 0) return;
+            const grupos = new Map();
+            semPosicao.forEach(n => {
+                const pai = n.orbit_ao_redor || masterHubId;
+                if (!grupos.has(pai)) grupos.set(pai, []);
+                grupos.get(pai).push(n);
+            });
+            grupos.forEach((grupo, paiId) => {
+                let posPai = { x: 0, y: 0 };
+                if (network) { const pe = network.getPositions([paiId]); if (pe[paiId]) posPai = pe[paiId]; }
+                const raio = Math.max(130, grupo.length * 22);
+                grupo.forEach((n, i) => {
+                    const angle = (2 * Math.PI * i) / Math.max(grupo.length, 1);
+                    n.x = Math.round(posPai.x + raio * Math.cos(angle));
+                    n.y = Math.round(posPai.y + raio * Math.sin(angle));
+                });
+            });
+        }
+
+        function aplicarSelecaoExterna(ids) {
+            if (!Array.isArray(ids)) return;
+            // Destaca todos os ids marcados na gaveta Entities; a fila do Find Path guarda os últimos 6.
+            const validos = ids.filter(id => nodeIndexMap.has(id));
+            selectedNodesQueue = validos.slice(-6);
+            selecaoMultiplaDeliberada = validos.length > 0;
+            atualizarBadgeFindPath();
+            const idsSet = new Set(validos);
+            const updates = [];
+            nodesDataSet.forEach(n => updates.push({
+                id: n.id,
+                borderWidth: idsSet.has(n.id) ? 3.5 : (n.id === masterHubId ? 3.5 : 1.2)
+            }));
+            nodesDataSet.update(updates);
+        }
+
+        function criarNetwork() {
+            network = new vis.Network(container, { nodes: nodesDataSet, edges: edgesDataSet }, {
+                physics: { enabled: false },
+                interaction: { hover: true, zoomView: true, dragNodes: true, tooltipDelay: 100 }
+            });
+
+            network.on("beforeDrawing", desenharGridPontilhado);
+            network.on("afterDrawing", desenharMinimapa);
+            network.on("zoom", function() {
+                updateAdaptiveLOD();
+                desenharMinimapa();
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+            });
+            network.on("animationFinished", function() {
+                updateAdaptiveLOD();
+                desenharMinimapa();
+            });
+            network.on("dragEnd", function(params) {
+                desenharMinimapa();
+                // Qualquer layout: o que o analista arrumou vai em lote 1,2 s depois do último arraste.
+                if (params && params.nodes && params.nodes.length > 0) {
+                    const mode = currentLayoutMode || 'organico';
+                    const positionsAtuais = network.getPositions(params.nodes);
+                    const positionsMap = {};
+                    posicoesPorLayout[mode] = posicoesPorLayout[mode] || {};
+                    params.nodes.forEach(function(id) {
+                        const p = positionsAtuais[id];
+                        if (!p || String(id).startsWith('tmp_')) return;
+                        positionsMap[id] = { x: Math.round(p.x), y: Math.round(p.y) };
+                        const ant = posicoesPorLayout[mode][id];
+                        posicoesPorLayout[mode][id] = { ...positionsMap[id], fixado: !!(ant && ant.fixado) };
+                        const nObj = nodeIndexMap.get(id);
+                        if (nObj && mode === 'organico') { nObj.x = Math.round(p.x); nObj.y = Math.round(p.y); }
+                    });
+                    if (Object.keys(positionsMap).length > 0) agendarSalvarPosicoes(positionsMap);
+                }
+            });
+            network.on("afterDrawing", desenharFixados);
+            network.on("oncontext", handleContextMenu);
+            // Duplo clique no FUNDO abre o quick-add (sobre nó/aresta fica livre para outros usos).
+            network.on("doubleClick", function(params) {
+                if (!(params.nodes && params.nodes.length) && params.edges && params.edges.length === 1) {
+                    const e = rawEdges.find(x => x.id === params.edges[0]);       // duplo clique no vínculo: edita
+                    if (e && (e.origem === 'manual' || e.origem === 'anotacao')) abrirMenuVinculo({ modo: 'editar', aresta: e });
+                    return;
+                }
+                if ((params.nodes && params.nodes.length) || (params.edges && params.edges.length)) return;
+                abrirQuickAdd(params.pointer.DOM, params.pointer.canvas);
+            });
+            network.on("afterDrawing", desenharLinhaElastica);
+            network.on("dragStart", function() {
+                ocultarTodosMenusContexto();
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+            });
+            network.on("click", function(params) {
+                if (modoSelecaoAtivo || modoLassoAtivo) return;
+                const shiftKeyAtivo = !!(params.event && params.event.srcEvent && params.event.srcEvent.shiftKey);
+
+                if (params.nodes.length > 0) {
+                    const clickedId = params.nodes[0];
+
+                    if (shiftKeyAtivo) {
+                        const idx = selectedNodesQueue.indexOf(clickedId);
+                        if (idx >= 0) {
+                            selectedNodesQueue.splice(idx, 1);
+                        } else {
+                            selectedNodesQueue.push(clickedId);
+                        }
+                        selecaoMultiplaDeliberada = selectedNodesQueue.length > 0;
+                        atualizarBadgeFindPath();
+                        const idsSet = new Set(selectedNodesQueue);
+                        const updates = [];
+                        nodesDataSet.forEach(n => updates.push({
+                            id: n.id,
+                            borderWidth: idsSet.has(n.id) ? 3.5 : (n.id === masterHubId ? 3.5 : 1.2)
+                        }));
+                        nodesDataSet.update(updates);
+                        sincronizarSelecaoComPython();
+                        return;
+                    }
+
+                    selectedNodesQueue.push(clickedId);
+                    if (selectedNodesQueue.length > 6) selectedNodesQueue.shift();
+                    selecaoMultiplaDeliberada = false;
+                    atualizarBadgeFindPath();
+                    if (!pathHighlightActive) {
+                        applyHighlight(clickedId);
+                    }
+                    openInspector(clickedId);
+                    sendValueToStreamlit({ tipo: "node_click", nodeId: clickedId });
+                    sendValueToStreamlit({ tipo: "clear_selection" });
+                } else {
+                    if (!pathHighlightActive) {
+                        applyHighlight(null);
+                    }
+                    closeDrawer();
+                    sendValueToStreamlit({ tipo: "node_click", nodeId: null });
+                    sendValueToStreamlit({ tipo: "clear_selection" });
+                    if (vizinhancaIsoladaAtiva) restaurarVisaoCompleta();
+                }
+            });
+            network.on("hoverNode", function(params) {
+                hoveredNodeIdTooltip = params.node;
+                if (currentHighlightId || pathHighlightActive || edgeHighlightActive) return;
+                const connected = network.getConnectedNodes(params.node); connected.push(params.node);
+                const updates = [];
+                nodesDataSet.forEach(n => updates.push({ id: n.id, opacity: connected.includes(n.id) ? 1.0 : 0.35 }));
+                nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(new Set(connected));
+            });
+            network.on("blurNode", function() {
+                hoveredNodeIdTooltip = null;
+                esconderTooltipNode();
+                if (currentHighlightId || pathHighlightActive || edgeHighlightActive) return;
+                const updates = []; nodesDataSet.forEach(n => updates.push({ id: n.id, opacity: 1.0 })); nodesDataSet.update(updates);
+                aplicarDestaqueArestasPorNos(null);
+            });
+        }
+
+        function inicializarOuAtualizarRede(novosDados) {
+            if (novosDados && novosDados.layout) {
+                document.documentElement.style.setProperty('--seguro-topo', (+novosDados.layout.topo || 0) + 'px');
+            }
+            const amostraPos = (novosDados.nodes || []).slice(0, 5).map(n => `${n.id}:${n.x},${n.y}`).join('|');
+            const assinaturaNova = JSON.stringify({ 
+                n: (novosDados.nodes || []).length, 
+                e: (novosDados.edges || []).length, 
+                h: novosDados.hub_id, 
+                l: novosDados.layout_ativo,
+                p: amostraPos
+            });
+            const mudouEstrutura = assinaturaNova !== assinaturaDadosAtual || !network;
+            baseFontSize = novosDados.base_font_size || 11;
+            targetSearchId = novosDados.target_node_id || "";
+
+            if (!mudouEstrutura) {
+                assinaturaDadosAtual = assinaturaNova;
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                reportarAlturaReal();
+                return;
+            }
+
+            assinaturaDadosAtual = assinaturaNova;
+            rawNodes = novosDados.nodes || [];
+            rawEdges = novosDados.edges || [];
+            masterHubId = novosDados.hub_id || "";
+            initialLayout = novosDados.layout_ativo || "organico";
+            currentLayoutMode = initialLayout;
+
+            posicionarNosOrbitalmente(rawNodes);
+            nodeIndexMap = new Map(rawNodes.map(n => [n.id, n]));
+            aplicarCurvaturaECoresArestas(rawEdges);
+            edgeOriginalStyleMap = new Map(
+                rawEdges.map(e => [e.id, {
+                    colorObj: JSON.parse(JSON.stringify(e.color)),
+                    width: e.width
+                }])
+            );
+
+            adjacencyMap = new Map(); adjacencySimples = new Map();
+            rawNodes.forEach(n => { adjacencyMap.set(n.id, []); adjacencySimples.set(n.id, []); });
+            rawEdges.forEach(e => {
+                const title = e.title ? e.title.replace('Vínculo relacional: ', '') : 'Conexão';
+                if (adjacencyMap.has(e.from)) adjacencyMap.get(e.from).push({ id: e.to, title });
+                if (adjacencyMap.has(e.to)) adjacencyMap.get(e.to).push({ id: e.from, title });
+                if (adjacencySimples.has(e.from)) adjacencySimples.get(e.from).push(e.to);
+                if (adjacencySimples.has(e.to)) adjacencySimples.get(e.to).push(e.from);
+            });
+
+            nodesDataSet.clear(); edgesDataSet.clear();
+            nodesDataSet.add(rawNodes); edgesDataSet.add(rawEdges);
+            if (Array.isArray(novosDados.tipos)) tiposPayload = novosDados.tipos;
+            if (novosDados.posicoes_por_layout) posicoesPorLayout = novosDados.posicoes_por_layout;
+            if (novosDados.rotulos_flags) rotulosFlags = novosDados.rotulos_flags;
+            if (Array.isArray(novosDados.campos_filtraveis)) camposFiltraveis = novosDados.campos_filtraveis;
+            if (novosDados.operadores_filtro) operadoresFiltro = novosDados.operadores_filtro;
+            if (Array.isArray(novosDados.filtros_salvos)) filtrosSalvos = novosDados.filtros_salvos;
+            if (novosDados.sugestoes_vinculo) sugestoesVinculo = novosDados.sugestoes_vinculo;
+            if (Array.isArray(novosDados.pivos)) catalogoPivos = novosDados.pivos;
+            montarFiltrosTipo();
+            montarRegras(); montarFiltrosSalvos();
+            if (tiposOcultos.size || filtroRegras.regras.length) aplicarFiltros();     // o filtro sobrevive a um Enrich/atualização
+
+            if (!network) criarNetwork();
+
+            setTimeout(function() {
+                if (initialLayout && initialLayout !== "organico") {
+                    changeLayout(initialLayout, false);
+                } else {
+                    marcarLayoutAtivo("organico"); fitView();
+                }
+                if (targetSearchId && nodeIndexMap.has(targetSearchId)) selectInspectedNode(targetSearchId);
+                updateAdaptiveLOD();
+                reportarAlturaReal();
+            }, 60);
+        }
+
+        // Recebe apenas a URL do payload (não mais o payload inteiro embutido
+        // na mensagem) — evita o teto de tamanho de mensagem do WebSocket que
+        // descartava silenciosamente grafos grandes (~1000 nós), deixando o
+        // fundo do grafo vazio sem erro nenhum. O conteúdo real chega por
+        // fetch() HTTP normal, sem esse limite, e com JSON.parse() nativo em
+        // vez de reinterpretar um payload gigante como texto de script.
+        function buscarEAplicarPayload(url) {
+            if (!url) return;
+            fetch(url)
+                .then(function(resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                })
+                .then(function(dados) { inicializarOuAtualizarRede(dados); })
+                .catch(function(err) { console.error('Falha ao carregar payload do grafo:', err); });
+        }
+
+        window.addEventListener("message", function(event) {
+            if (!event.data) return;
+            if (event.data.type === "streamlit:render_url") {
+                buscarEAplicarPayload(event.data.url);
+            } else if (event.data.type === "streamlit:selection") {
+                aplicarSelecaoExterna(event.data.ids || []);
+            } else if (event.data.type === "lcfo:graph_patch") {
+                aplicarPatchGrafo(event.data.patch);
+                const el = document.getElementById('indicador-salvo');
+                if (el && el.dataset.estado === 'salvando') definirSalvamento(event.data.patch && event.data.patch.erro ? 'erro' : 'salvo');
+            } else if (event.data.type === "lcfo:positions_saved") {
+                receberPosicoesSalvas(event.data);
+            } else if (event.data.type === "lcfo:quick_add_result") {
+                receberResultadoQA(event.data);
+            } else if (event.data.type === "lcfo:filtros_salvos") {
+                filtrosSalvos = event.data.filtros || []; montarFiltrosSalvos();
+            } else if (event.data.type === "lcfo:focar") {           // menção clicada num parecer
+                if (nodeIndexMap.has(event.data.id)) selectInspectedNode(event.data.id);
+            } else if (event.data.type === "lcfo:rotulos_flags") {
+                rotulosFlags = event.data.rotulos || {};
+                montarFiltrosTipo();
+            } else if (event.data.type === "lcfo:filtro_execucao") {
+                aplicarFiltroExecucao(event.data);
+            }
+        });
+
+        function instalarTooltipsCustomizados() {
+            const tip = document.createElement('div');
+            tip.className = 'custom-tooltip';
+            tip.id = 'custom-tooltip-global';
+            document.body.appendChild(tip);
+
+            document.querySelectorAll('[data-tip]').forEach(el => {
+                el.addEventListener('mouseenter', () => {
+                    tip.innerText = el.getAttribute('data-tip');
+                    tip.style.display = 'block';
+                    const r = el.getBoundingClientRect();
+                    tip.style.left = (r.left + r.width / 2) + 'px';
+                    tip.style.top = (r.top - 8) + 'px';
+                    requestAnimationFrame(() => {
+                        const tw = tip.offsetWidth, th = tip.offsetHeight;
+                        let finalX = (r.left + r.width / 2) - tw / 2;
+                        let finalY = r.top - th - 8;
+                        if (finalX < 4) finalX = 4;
+                        if (finalX + tw > window.innerWidth - 4) finalX = window.innerWidth - tw - 4;
+                        if (finalY < 4) finalY = r.bottom + 8;
+                        tip.style.left = finalX + 'px';
+                        tip.style.top = finalY + 'px';
+                    });
+                });
+                el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+            });
+        }
+        instalarTooltipsCustomizados();
+
+        notifyReadyStreamlit();
+    </script>
+</body>
+</html>
